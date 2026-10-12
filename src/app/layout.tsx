@@ -1,6 +1,12 @@
 import type { Metadata, Viewport } from "next";
 import { Sora, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { SplashScreen } from "@/components/splash-screen";
+
+// Runs before first paint: once the launch splash has played in this browser
+// session, hide it for good so navigating or reloading never replays it.
+// (Same sessionStorage key as src/components/splash-screen.tsx.)
+const splashSkipScript = `try{if(sessionStorage.getItem("th-splash")==="1")document.documentElement.dataset.splash="skip"}catch(e){}`;
 
 // viewportFit: cover lets env(safe-area-inset-bottom) resolve on iOS, so the
 // fixed bottom tab bar sits above the home indicator instead of under it.
@@ -42,8 +48,15 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${sora.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: splashSkipScript }} />
+      </head>
+      <body className="min-h-full flex flex-col">
+        <SplashScreen />
+        {children}
+      </body>
     </html>
   );
 }

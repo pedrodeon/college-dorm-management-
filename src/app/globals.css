@@ -158,3 +158,136 @@ body {
     print-color-adjust: exact;
   }
 }
+
+/*
+ * Launch splash (src/components/splash-screen.tsx). Navy canvas, orange orbit
+ * while loading, then the seal comes forward from behind and the screen fades
+ * out. The base state below is the "loading" phase so it paints from the
+ * server-rendered HTML with no JS; data-phase only flips it forward.
+ */
+.th-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 56px;
+  background: var(--color-canvas);
+  opacity: 1;
+  transition: opacity 0.4s ease;
+}
+html[data-splash="skip"] .th-splash {
+  display: none;
+}
+.th-splash[data-phase="exit"] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.th-splash-stage {
+  position: relative;
+  width: 252px;
+  height: 252px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.th-splash-orbit {
+  position: absolute;
+  inset: 0;
+  opacity: 1;
+  transition:
+    opacity 0.35s ease,
+    transform 0.5s ease;
+}
+.th-splash-spin {
+  animation: th-splash-spin 1.4s linear infinite;
+}
+.th-splash[data-phase="reveal"] .th-splash-orbit,
+.th-splash[data-phase="exit"] .th-splash-orbit {
+  opacity: 0;
+  transform: scale(1.12);
+}
+
+.th-splash-logo {
+  width: 208px;
+  height: 208px;
+  opacity: 0;
+  transform: scale(0.5);
+  filter: blur(8px) brightness(0.55);
+}
+.th-splash[data-phase="reveal"] .th-splash-logo,
+.th-splash[data-phase="exit"] .th-splash-logo {
+  opacity: 1;
+  transform: scale(1);
+  filter: blur(0) brightness(1);
+  transition:
+    opacity 0.5s ease 0.2s,
+    transform 0.9s cubic-bezier(0.2, 0.9, 0.3, 1.15) 0.2s,
+    filter 0.9s ease 0.2s;
+}
+
+.th-splash-dots {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 24px;
+  opacity: 1;
+  transition: opacity 0.3s ease;
+}
+.th-splash-dots span {
+  width: 9px;
+  height: 9px;
+  border-radius: 9999px;
+  background: #fff;
+  animation: th-splash-dot 1.2s ease-in-out infinite;
+}
+.th-splash-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.th-splash-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+.th-splash[data-phase="reveal"] .th-splash-dots,
+.th-splash[data-phase="exit"] .th-splash-dots {
+  opacity: 0;
+}
+
+@keyframes th-splash-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes th-splash-dot {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.5;
+  }
+  40% {
+    transform: translateY(-8px);
+    opacity: 1;
+  }
+}
+
+/* Reduced motion: no orbit, dots or movement; the seal is simply shown. */
+@media (prefers-reduced-motion: reduce) {
+  .th-splash-spin,
+  .th-splash-dots span {
+    animation: none;
+  }
+  .th-splash-orbit,
+  .th-splash-dots {
+    display: none;
+  }
+  .th-splash-logo {
+    opacity: 1;
+    transform: none;
+    filter: none;
+    transition: none;
+  }
+}
