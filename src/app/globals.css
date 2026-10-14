@@ -160,20 +160,35 @@ body {
 }
 
 /*
- * Launch splash (src/components/splash-screen.tsx). Navy canvas, orange orbit
- * while loading, then the seal comes forward from behind and the screen fades
- * out. The base state below is the "loading" phase so it paints from the
+ * Launch splash (src/components/splash-screen.tsx). Navy canvas; the seal
+ * fills with color from the bottom up like water, its surface a moving wave.
+ *
+ * Mechanics: each water layer is the full-color seal masked by a wave tile
+ * (wavy top edge, solid below). --th-level slides the tile up to raise the
+ * water; --th-wave slides it sideways one wave period, looping, so the
+ * surface ripples. Registered with @property so the two animate separately.
+ *
+ * The base state below is the "loading" phase so it paints from the
  * server-rendered HTML with no JS; data-phase only flips it forward.
  */
+@property --th-level {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 220px;
+}
+@property --th-wave {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
 .th-splash {
   position: fixed;
   inset: 0;
   z-index: 1000;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 56px;
   background: var(--color-canvas);
   opacity: 1;
   transition: opacity 0.4s ease;
@@ -186,108 +201,107 @@ html[data-splash="skip"] .th-splash {
   pointer-events: none;
 }
 
-.th-splash-stage {
+.th-splash-seal {
   position: relative;
-  width: 252px;
-  height: 252px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.th-splash-orbit {
-  position: absolute;
-  inset: 0;
-  opacity: 1;
-  transition:
-    opacity 0.35s ease,
-    transform 0.5s ease;
-}
-.th-splash-spin {
-  animation: th-splash-spin 1.4s linear infinite;
-}
-.th-splash[data-phase="reveal"] .th-splash-orbit,
-.th-splash[data-phase="exit"] .th-splash-orbit {
-  opacity: 0;
-  transform: scale(1.12);
-}
-
-.th-splash-logo {
   width: 208px;
   height: 208px;
-  opacity: 0;
-  transform: scale(0.5);
-  filter: blur(8px) brightness(0.55);
+  transition: transform 0.4s ease;
 }
-.th-splash[data-phase="reveal"] .th-splash-logo,
-.th-splash[data-phase="exit"] .th-splash-logo {
-  opacity: 1;
-  transform: scale(1);
-  filter: blur(0) brightness(1);
-  transition:
-    opacity 0.5s ease 0.2s,
-    transform 0.9s cubic-bezier(0.2, 0.9, 0.3, 1.15) 0.2s,
-    filter 0.9s ease 0.2s;
+.th-splash[data-phase="exit"] .th-splash-seal {
+  transform: scale(1.06);
 }
-
-.th-splash-dots {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 24px;
-  opacity: 1;
-  transition: opacity 0.3s ease;
-}
-.th-splash-dots span {
-  width: 9px;
-  height: 9px;
-  border-radius: 9999px;
-  background: #fff;
-  animation: th-splash-dot 1.2s ease-in-out infinite;
-}
-.th-splash-dots span:nth-child(2) {
-  animation-delay: 0.15s;
-}
-.th-splash-dots span:nth-child(3) {
-  animation-delay: 0.3s;
-}
-.th-splash[data-phase="reveal"] .th-splash-dots,
-.th-splash[data-phase="exit"] .th-splash-dots {
-  opacity: 0;
+.th-splash-seal img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
-@keyframes th-splash-spin {
+/* One wave period per 208px tile: crest ~2px, trough ~22px from the top. */
+.th-splash-water {
+  --th-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='208' height='260'%3E%3Cpath d='M0 12 Q52 -8 104 12 T208 12 V260 H0 Z'/%3E%3C/svg%3E");
+  -webkit-mask-image: var(--th-mask);
+  mask-image: var(--th-mask);
+  -webkit-mask-size: 208px 260px;
+  mask-size: 208px 260px;
+  -webkit-mask-repeat: repeat-x;
+  mask-repeat: repeat-x;
+  -webkit-mask-position: var(--th-wave) var(--th-level);
+  mask-position: var(--th-wave) var(--th-level);
+  animation:
+    th-splash-wave 1.6s linear infinite,
+    th-splash-rise 1.8s cubic-bezier(0.3, 0.6, 0.4, 1) forwards;
+}
+/* A paler wave a few px above the surface, drifting the other way. */
+.th-splash-water-back {
+  opacity: 0.45;
+  -webkit-mask-position: var(--th-wave) calc(var(--th-level) - 8px);
+  mask-position: var(--th-wave) calc(var(--th-level) - 8px);
+  animation:
+    th-splash-wave-back 2.3s linear infinite,
+    th-splash-rise 1.8s cubic-bezier(0.3, 0.6, 0.4, 1) forwards;
+}
+
+/* App loaded: top the seal off. The wave keeps its name, so it keeps going. */
+.th-splash[data-phase="fill"] .th-splash-water,
+.th-splash[data-phase="exit"] .th-splash-water {
+  animation:
+    th-splash-wave 1.6s linear infinite,
+    th-splash-top 0.7s ease-in-out forwards;
+}
+.th-splash[data-phase="fill"] .th-splash-water-back,
+.th-splash[data-phase="exit"] .th-splash-water-back {
+  animation:
+    th-splash-wave-back 2.3s linear infinite,
+    th-splash-top 0.7s ease-in-out forwards;
+}
+
+@keyframes th-splash-wave {
+  from {
+    --th-wave: 0px;
+  }
   to {
-    transform: rotate(360deg);
+    --th-wave: 208px;
   }
 }
-@keyframes th-splash-dot {
-  0%,
-  80%,
-  100% {
-    transform: translateY(0);
-    opacity: 0.5;
+@keyframes th-splash-wave-back {
+  from {
+    --th-wave: 0px;
   }
-  40% {
-    transform: translateY(-8px);
-    opacity: 1;
+  to {
+    --th-wave: -208px;
+  }
+}
+/* Empty -> ~85% while the app loads (eases off, as if waiting). */
+@keyframes th-splash-rise {
+  from {
+    --th-level: 220px;
+  }
+  to {
+    --th-level: 28px;
+  }
+}
+/* ~85% -> full: the wave's trough clears the top edge. */
+@keyframes th-splash-top {
+  from {
+    --th-level: 28px;
+  }
+  to {
+    --th-level: -30px;
   }
 }
 
-/* Reduced motion: no orbit, dots or movement; the seal is simply shown. */
+/* Reduced motion: no water; the full seal is simply shown. */
 @media (prefers-reduced-motion: reduce) {
-  .th-splash-spin,
-  .th-splash-dots span {
-    animation: none;
-  }
-  .th-splash-orbit,
-  .th-splash-dots {
+  .th-splash-water-back {
     display: none;
   }
-  .th-splash-logo {
-    opacity: 1;
-    transform: none;
-    filter: none;
-    transition: none;
+  .th-splash-water,
+  .th-splash[data-phase] .th-splash-water {
+    animation: none;
+    -webkit-mask-image: none;
+    mask-image: none;
   }
 }
