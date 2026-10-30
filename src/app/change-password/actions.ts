@@ -1,8 +1,8 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { createClient as createServiceClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 export type ChangePasswordResult = { ok: false; error: string };
 
@@ -35,11 +35,7 @@ export async function changePassword(
     return { ok: false, error: error.message };
   }
 
-  const service = createServiceClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  );
-  const { error: flagError } = await service
+  const { error: flagError } = await createAdminClient()
     .from("users")
     .update({ must_change_password: false })
     .eq("id", user.id);

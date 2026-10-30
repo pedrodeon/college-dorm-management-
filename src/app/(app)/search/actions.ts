@@ -24,9 +24,16 @@ import {
  * why search only ever finds this term's residents.
  */
 
-export async function searchResidents(
-  query: string,
-): Promise<SearchOutcome<ResidentResult>> {
+/**
+ * What the overlay gets back. A failed query is its own kind — never an empty
+ * match list, which would read as "nobody by that name" when the truth is
+ * "the search didn't run".
+ */
+export type SearchResponse =
+  | SearchOutcome<ResidentResult>
+  | { kind: "error"; message: string };
+
+export async function searchResidents(query: string): Promise<SearchResponse> {
   const { kind } = classifyQuery(query);
   if (kind === "empty") return { kind, matches: [], total: 0 };
 
@@ -49,7 +56,12 @@ export async function searchResidents(
       }[]
     >();
 
-  if (error || !data) return { kind, matches: [], total: 0 };
+  if (error || !data) {
+    return {
+      kind: "error",
+      message: "Search isn't working right now. Check your connection and try again.",
+    };
+  }
 
   // Read by room so each resident arrives with their room and hallway
   // already attached — the same shape room detail renders from.

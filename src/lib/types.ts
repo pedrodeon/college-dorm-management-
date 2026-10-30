@@ -1,7 +1,8 @@
-// Hand-written row types mirroring supabase/migrations/*_staff_and_building.sql.
-// Once the cloud project exists, these can be replaced by generated types
-// (`npx supabase gen types typescript`) — keep all DB row shapes in this file
-// so that swap stays a one-file change.
+// Hand-written row types mirroring the tables in supabase/migrations/.
+// They could be replaced by generated types (`npx supabase gen types
+// typescript`) — keep all DB row shapes in this file so that swap stays a
+// one-file change. Columns that became nullable when staff removal switched
+// to SET NULL (20260806040634) are typed `string | null` here.
 
 export type StaffRole = "rd" | "ra";
 export type Wing = "holiday" | "lebanon";
@@ -21,6 +22,8 @@ export type StaffUser = {
   name: string;
   email: string;
   role: StaffRole;
+  /** Still on a temporary password: not staff yet as far as RLS is concerned. */
+  must_change_password: boolean;
 };
 
 export type Hallway = {
@@ -129,7 +132,8 @@ export type Rating = 1 | 2 | 3 | 4 | 5;
 export type RoomCheck = {
   id: string;
   room_id: string;
-  checked_by: string;
+  /** Null once that staff member has been removed. */
+  checked_by: string | null;
   timestamp: string;
   floor_cleanliness: Rating;
   trash: Rating;
@@ -147,7 +151,8 @@ export type InspectionSignature = {
   role: SignatureRole;
   storage_path: string;
   signed_at: string;
-  captured_by: string;
+  /** Null once that staff member has been removed. */
+  captured_by: string | null;
 };
 
 /** "Resident unavailable / declined to sign" on a move-out inspection. */
@@ -155,7 +160,8 @@ export type SignatureWaiver = {
   id: string;
   inspection_id: string;
   reason: string;
-  waived_by: string;
+  /** Null once that staff member has been removed. */
+  waived_by: string | null;
   created_at: string;
 };
 

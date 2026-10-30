@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import type { Rating } from "@/lib/types";
 import { Alert } from "@/components/ui/alert";
 import { Card } from "@/components/ui/card";
+import { LocalTime } from "@/components/ui/local-time";
 import { PageTitle, SectionLabel } from "@/components/ui/typography";
 import { PageHeader } from "@/components/ui/page-header";
 import { staffName } from "@/lib/staff-name";
@@ -55,9 +56,8 @@ export default async function RoomCheckPage({
 
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <PageTitle>Room check</PageTitle>
-        <span className="text-sm text-white/60">
-          {new Date(check.timestamp).toLocaleString()}
-        </span>
+        {/* Viewer's clock, hydrated client-side — no server-timezone stamp. */}
+        <LocalTime iso={check.timestamp} className="text-sm text-white/60" />
       </div>
       <p className="mt-1 text-sm text-white/60">
         Room {room.room_number}

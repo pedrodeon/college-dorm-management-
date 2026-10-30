@@ -1,8 +1,9 @@
 // The two-signature attestation on move-in inspections. The rules: signatures
 // bind to one exact inspection snapshot, one per role, captured only by the
 // signed-in staff member, only against a move-in inspection that names a
-// resident — and once captured they are permanent for every role, service_role
-// included. record_occupancy's check_in gate is covered in occupancy.test.mjs.
+// resident, the `ra` half only by whoever conducted the inspection — and once
+// captured they are permanent for every role, service_role included.
+// record_occupancy's check_in gate is covered in occupancy.test.mjs.
 
 import { test, before, describe } from "node:test";
 import assert from "node:assert/strict";
@@ -20,14 +21,14 @@ import {
 
 const TESTY = "S1000101";
 
-let admin, anon, ra, raId, rdId, moveInId, periodicId, roomId;
+let admin, anon, ra, raId, rd, rdId, moveInId, periodicId, roomId;
 
 before(async () => {
   await assertSeededDevDatabase();
   admin = adminClient();
   anon = anonClient();
   ({ client: ra, userId: raId } = await staffClient(RA_EMAIL));
-  ({ userId: rdId } = await staffClient(RD_EMAIL));
+  ({ client: rd, userId: rdId } = await staffClient(RD_EMAIL));
 
   const testy = await occupancyByStudentId(TESTY);
   roomId = testy.room_id;
@@ -105,6 +106,36 @@ describe("capturing signatures", () => {
       captured_by: rdId, // someone else
     });
     assert.ok(error, "a signature was recorded as another staff member");
+  });
+
+  test("only the inspector can sign as the RA", async () => {
+    // The RD did not conduct this inspection (the RA did, in `before`). A
+    // genuine upload of their own, under the right prefix, as themselves —
+    // every other rule satisfied — and still refused for the `ra` role.
+    const { error } = await rd.from("inspection_signatures").insert({
+      inspection_id: moveInId,
+      role: "ra",
+      storage_path: await uploadSignature(rd, moveInId, "ra"),
+      captured_by: rdId,
+    });
+    assert.ok(error, "someone other than the inspector signed as the RA");
+
+    const { data } = await admin
+      .from("inspection_signatures")
+      .select("id")
+      .eq("inspection_id", moveInId)
+      .eq("role", "ra");
+    assert.equal(data?.length ?? 0, 0, "an RA signature row landed anyway");
+  });
+
+  test("the inspector can sign as the RA", async () => {
+    const { error } = await ra.from("inspection_signatures").insert({
+      inspection_id: moveInId,
+      role: "ra",
+      storage_path: await uploadSignature(ra, moveInId, "ra"),
+      captured_by: raId,
+    });
+    assert.equal(error, null, error?.message);
   });
 
   test("a periodic inspection cannot carry signatures", async () => {

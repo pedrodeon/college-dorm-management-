@@ -38,13 +38,22 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const { pathname } = request.nextUrl;
-  const isPublicRoute =
-    pathname.startsWith("/login") || pathname.startsWith("/auth");
+  // Whole path segments only: "/loginX" or a future "/authority" must not
+  // ride on the login exemption.
+  const isPublicRoute = ["/login", "/auth"].some(
+    (route) => pathname === route || pathname.startsWith(`${route}/`),
+  );
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
-    return NextResponse.redirect(url);
+    const redirect = NextResponse.redirect(url);
+    // Carry over any cookies the refresh above set, so an expired session is
+    // cleared (or a refreshed one kept) even on the way to /login.
+    supabaseResponse.cookies.getAll().forEach((cookie) => {
+      redirect.cookies.set(cookie);
+    });
+    return redirect;
   }
 
   return supabaseResponse;

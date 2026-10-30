@@ -29,6 +29,8 @@ export type InspectionRecord = {
     term: string;
     people: { full_name: string; student_id: string } | null;
   } | null;
+  /** Who conducted it — the only staff member who may sign the RA half. */
+  inspected_by: string | null;
   users: { name: string } | null;
   inspection_signatures: {
     role: "resident" | "ra";
@@ -60,7 +62,7 @@ export async function loadInspectionRecord(
   const { data, error } = await supabase
     .from("inspections")
     .select(
-      `id, type, timestamp, notes,
+      `id, type, timestamp, notes, inspected_by,
        rooms ( id, room_number, hallways ( id, name ) ),
        occupancies ( id, occupancy_status, term, people ( full_name, student_id ) ),
        users:inspected_by ( name ),
@@ -86,9 +88,11 @@ export function sortedItems(record: InspectionRecord) {
 }
 
 /**
- * The completeness gate, one place: RA signature AND (resident signature OR
- * a move-out waiver) — the same rule record_occupancy enforces in the
- * database.
+ * The completeness gate for a loaded record: RA signature AND (resident
+ * signature OR a move-out waiver) — the same rule record_occupancy enforces
+ * in the database. This is the only exported "is it complete" helper; the
+ * gate screens read the same rule through `gateProgress` (occupancy-gate.ts),
+ * which works on the lighter per-stay rows the desk queries.
  */
 export function recordComplete(record: InspectionRecord): boolean {
   const roles = new Set(record.inspection_signatures.map((s) => s.role));

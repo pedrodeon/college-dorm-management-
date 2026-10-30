@@ -6,11 +6,15 @@ import { useState } from "react";
  * "Download check-ins" — the hallway's move-in records as one PDF.
  *
  * Two steps on purpose. First a cheap probe asking whether the hallway has
- * any completed check-ins, so an empty one says so instead of downloading a
- * blank file. Only then does the browser fetch the document itself, by
- * ordinary navigation: the packet can run to tens of megabytes with photos,
- * and letting the browser stream it to disk keeps it out of the page's
- * memory and gives phones their normal download / share sheet.
+ * any completed check-ins (or whether the lookup failed — the route answers
+ * 500 for that), so an empty or broken one says so under the button instead
+ * of downloading a blank file or showing a page of JSON. Only then does the
+ * browser fetch the document itself, by ordinary navigation: the packet can
+ * run to tens of megabytes with photos, and letting the browser stream it
+ * to disk keeps it out of the page's memory and gives phones their normal
+ * download / share sheet. The one case that still reaches the raw JSON is a
+ * 409 race (every record became unprintable between probe and download),
+ * which cannot happen in normal use.
  */
 export function HallwayCheckinsButton({ hallwayId }: { hallwayId: string }) {
   const [state, setState] = useState<"idle" | "working">("idle");
@@ -31,6 +35,7 @@ export function HallwayCheckinsButton({ hallwayId }: { hallwayId: string }) {
         setMessage("No completed check-ins in this hallway yet.");
         return;
       }
+
       // Hand off to the browser: it downloads (or opens the share sheet on
       // an iOS home-screen app) without the page holding the bytes.
       window.location.assign(url);

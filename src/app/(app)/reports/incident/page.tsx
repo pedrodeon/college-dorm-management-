@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { chicagoNow, timeKey } from "@/lib/chicago-date";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { PageTitle } from "@/components/ui/typography";
@@ -18,6 +19,9 @@ export default async function IncidentReportPage() {
     .from("rooms")
     .select(`id, room_number, hallways ( name, sort_order )`)
     .overrideTypes<RoomRow[]>();
+
+  const now = chicagoNow();
+  const defaults = { date: now.date, time: timeKey(now.hour, now.minute) };
 
   const roomOptions: RoomOption[] = (rooms ?? [])
     .sort(
@@ -40,7 +44,7 @@ export default async function IncidentReportPage() {
       </p>
 
       <Card variant="sheet" className="mt-6">
-        <IncidentForm rooms={roomOptions} />
+        <IncidentForm rooms={roomOptions} defaults={defaults} />
       </Card>
     </section>
   );

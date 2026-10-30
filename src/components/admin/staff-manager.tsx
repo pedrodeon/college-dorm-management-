@@ -30,6 +30,8 @@ export function StaffManager({
   currentUserId: string;
 }) {
   const [error, setError] = useState<string | null>(null);
+  // A refusal about one member renders on their card, not at the top.
+  const [memberError, setMemberError] = useState<{ id: string; message: string } | null>(null);
   const [invited, setInvited] = useState<{ email: string; tempPassword: string } | null>(null);
   const [isPending, startTransition] = useTransition();
   const [name, setName] = useState("");
@@ -38,6 +40,7 @@ export function StaffManager({
 
   function invite() {
     setError(null);
+    setMemberError(null);
     setInvited(null);
     startTransition(async () => {
       const res = await inviteStaff(name, email, role);
@@ -50,11 +53,14 @@ export function StaffManager({
     });
   }
 
-  function run(fn: () => Promise<{ ok: boolean; error?: string }>) {
+  function run(memberId: string, fn: () => Promise<{ ok: boolean; error?: string }>) {
     setError(null);
+    setMemberError(null);
     startTransition(async () => {
       const res = await fn();
-      if (!res.ok) setError(res.error ?? "Something went wrong.");
+      if (!res.ok) {
+        setMemberError({ id: memberId, message: res.error ?? "Something went wrong." });
+      }
     });
   }
 
@@ -112,8 +118,12 @@ export function StaffManager({
                 variant="danger"
                 size="sm"
                 onClick={() => {
-                  if (confirm(`Remove ${member.name}? Their login is deleted.`)) {
-                    run(() => removeStaff(member.id));
+                  if (
+                    confirm(
+                      `Remove ${member.name}? Their login is deleted and any front-desk shifts they claimed are released for someone else to take.`,
+                    )
+                  ) {
+                    run(member.id, () => removeStaff(member.id));
                   }
                 }}
                 disabled={isPending || member.id === currentUserId}
@@ -123,8 +133,14 @@ export function StaffManager({
               </Button>
             </div>
 
+            {memberError?.id === member.id && (
+              <Alert tone="error" className="mt-3">
+                {memberError.message}
+              </Alert>
+            )}
+
             <div className="mt-3">
-              <p className="text-xs font-medium uppercase tracking-wide text-gray-400">
+              <p className="text-xs font-medium uppercase tracking-wide text-gray-600">
                 Hallway coverage
               </p>
               <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
@@ -136,7 +152,10 @@ export function StaffManager({
                         type="checkbox"
                         checked={assigned}
                         disabled={isPending}
-                        onChange={() => run(() => setAssignment(member.id, h.id, !assigned))}
+                        // Six cards each list the same eight hallways; the
+                        // label has to say whose coverage this box is.
+                        aria-label={`${member.name} covers ${h.name}`}
+                        onChange={() => run(member.id, () => setAssignment(member.id, h.id, !assigned))}
                       />
                       {h.name}
                     </label>

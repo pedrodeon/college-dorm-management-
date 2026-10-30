@@ -5,12 +5,24 @@
  * places together.
  */
 
+// This module imports nothing on purpose: tests/desk-schedule.test.mjs loads
+// it straight into node, which resolves neither the "@/" alias nor an
+// extensionless relative import. Instant math lives in lib/chicago-date.ts;
+// callers compose the two: chicagoInstant(date, slotStartHour(slot)).
+
 export type ShiftSlot = 1 | 2;
 
 export const SHIFT_SLOTS = [
   { slot: 1 as ShiftSlot, label: "6–8 PM", short: "6–8", startHour: 18 },
   { slot: 2 as ShiftSlot, label: "8–10 PM", short: "8–10", startHour: 20 },
 ] as const;
+
+/** The Chicago wall-clock hour a slot starts (18 or 20). Pair it with
+    chicagoInstant() for the real start — the same instant as
+    desk_shift_start() in SQL. */
+export function slotStartHour(slot: number): number {
+  return SHIFT_SLOTS.find((s) => s.slot === slot)?.startHour ?? 18;
+}
 
 /*
  * WHICH NIGHTS THE DESK IS STAFFED — the single source for that rule.
@@ -108,17 +120,6 @@ export function parseMonthParam(
 
 export function monthParam(year: number, month: number): string {
   return `${year}-${String(month).padStart(2, "0")}`;
-}
-
-/** Shift a { year, month } by +1 / -1 months. */
-export function addMonths(year: number, month: number, delta: 1 | -1) {
-  const d = new Date(year, month - 1 + delta, 1);
-  return { year: d.getFullYear(), month: d.getMonth() + 1 };
-}
-
-/** Local date key "YYYY-MM-DD" — string math only, no timezone conversion. */
-export function dateKey(year: number, month: number, day: number): string {
-  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 const MONTH_SHORT = [

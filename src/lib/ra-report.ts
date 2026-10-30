@@ -1,6 +1,15 @@
 import "server-only";
 
-import { createClient } from "@supabase/supabase-js";
+import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  addDays,
+  chicagoInstant,
+  chicagoMidnight,
+  chicagoToday,
+  shortDate,
+  weekStartOf,
+} from "@/lib/chicago-date";
+import { slotStartHour } from "@/lib/desk-shifts";
 
 /*
  * The RA weekly report: per-RA counts of room checks and front-desk shifts
@@ -17,9 +26,14 @@ import { createClient } from "@supabase/supabase-js";
  */
 
 export type RaReportRow = {
+  id: string;
   name: string;
   roomChecks: number;
+  /** Shifts whose start has passed — actually worked. */
   deskShifts: number;
+  /** Shifts held later this week that haven't started yet (current week
+      only; always 0 for a finished week). Not counted as worked. */
+  deskShiftsScheduled: number;
 };
 
 export type RaReport = {
@@ -31,80 +45,23 @@ export type RaReport = {
   totals: { roomChecks: number; deskShifts: number };
 };
 
-const TZ = "America/Chicago";
-
-// ---------------------------------------------------------------------------
-// Chicago calendar math (no TZ library; Chicago is only ever UTC-5 or UTC-6)
-// ---------------------------------------------------------------------------
-
-/** Today's date/hour on the building's clock, wherever the server runs. */
-export function chicagoNow(): { date: string; hour: number } {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(new Date());
-  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
-  return {
-    date: `${get("year")}-${get("month")}-${get("day")}`,
-    hour: Number(get("hour")),
-  };
-}
-
-/** Add days to a plain YYYY-MM-DD (pure calendar math, timezone-free). */
-export function addDays(date: string, days: number): string {
-  const [y, m, d] = date.split("-").map(Number);
-  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
-}
-
-/** Normalize any date to its week's Monday (weekday of a date is TZ-free). */
-export function weekStartOf(date: string): string {
-  const [y, m, d] = date.split("-").map(Number);
-  // getUTCDay(): 0 = Sunday … 6 = Saturday. Shift so Monday is 0 and Sunday
-  // is 6, which puts Sunday at the END of its week rather than the start.
-  const dayFromMonday = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7;
-  return addDays(date, -dayFromMonday);
-}
-
 /** The current Chicago week's Monday — the default report week. */
 export function currentChicagoWeekStart(): string {
-  return weekStartOf(chicagoNow().date);
-}
-
-/**
- * Midnight Chicago on a given date, as a real instant. Tries both offsets
- * the zone can have and keeps the one that round-trips — DST-correct
- * without a timezone library.
- */
-function chicagoMidnight(date: string): Date {
-  for (const offset of ["-05:00", "-06:00"]) {
-    const candidate = new Date(`${date}T00:00:00${offset}`);
-    const hour = new Intl.DateTimeFormat("en-US", {
-      timeZone: TZ,
-      hour: "2-digit",
-      hourCycle: "h23",
-    }).format(candidate);
-    if (hour === "00") return candidate;
-  }
-  // Unreachable for America/Chicago; fail loud rather than mis-window.
-  throw new Error(`Could not resolve Chicago midnight for ${date}`);
+  return weekStartOf(chicagoToday());
 }
 
 // ---------------------------------------------------------------------------
 // The report
 // ---------------------------------------------------------------------------
 
-function serviceClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  );
-}
+// Staff data only (room checks and desk shifts per RA); the shared admin
+// client keeps the service key behind `server-only` and off any session.
+const serviceClient = createAdminClient;
 
-export async function buildRaWeeklyReport(weekStart: string): Promise<RaReport> {
+export async function buildRaWeeklyReport(
+  weekStart: string,
+  now: Date = new Date(),
+): Promise<RaReport> {
   const start = weekStartOf(weekStart); // tolerate any day of the week
   const end = addDays(start, 6);
   const supabase = serviceClient();
@@ -122,7 +79,7 @@ export async function buildRaWeeklyReport(weekStart: string): Promise<RaReport> 
       .lt("timestamp", toInstant),
     supabase
       .from("desk_shifts")
-      .select("claimed_by")
+      .select("claimed_by, shift_date, slot")
       .gte("shift_date", start)
       .lte("shift_date", end)
       .not("claimed_by", "is", null),
@@ -139,13 +96,22 @@ export async function buildRaWeeklyReport(weekStart: string): Promise<RaReport> 
     return counts;
   };
   const checkCounts = countBy(checks.data ?? [], "checked_by");
-  const shiftCounts = countBy(shifts.data ?? [], "claimed_by");
+  // A shift claimed for later in the week is a plan, not work done — split
+  // on its real start so the current week never over-reports.
+  const hasStarted = (s: { shift_date: string; slot: number }) =>
+    chicagoInstant(s.shift_date, slotStartHour(s.slot)) <= now;
+  const started = (shifts.data ?? []).filter(hasStarted);
+  const upcoming = (shifts.data ?? []).filter((s) => !hasStarted(s));
+  const shiftCounts = countBy(started, "claimed_by");
+  const scheduledCounts = countBy(upcoming, "claimed_by");
 
   // Every RA appears — zeros are the report's point as much as the numbers.
   const rows: RaReportRow[] = (ras.data ?? []).map((ra) => ({
+    id: ra.id,
     name: ra.name,
     roomChecks: checkCounts.get(ra.id) ?? 0,
     deskShifts: shiftCounts.get(ra.id) ?? 0,
+    deskShiftsScheduled: scheduledCounts.get(ra.id) ?? 0,
   }));
 
   return {
@@ -161,13 +127,5 @@ export async function buildRaWeeklyReport(weekStart: string): Promise<RaReport> 
 
 /** "Aug 16 – Aug 22, 2026" */
 export function weekLabel(report: Pick<RaReport, "weekStart" | "weekEnd">): string {
-  const fmt = (date: string) => {
-    const [y, m, d] = date.split("-").map(Number);
-    return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      timeZone: "UTC",
-    });
-  };
-  return `${fmt(report.weekStart)} – ${fmt(report.weekEnd)}, ${report.weekEnd.slice(0, 4)}`;
+  return `${shortDate(report.weekStart)} – ${shortDate(report.weekEnd)}, ${report.weekEnd.slice(0, 4)}`;
 }

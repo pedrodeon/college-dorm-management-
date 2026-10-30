@@ -8,7 +8,6 @@ export type Urgency = "low" | "normal" | "high";
 
 export type MaintenanceInput = {
   location: string;
-  date: string; // yyyy-mm-dd (context for the filer; the row keeps created_at)
   description: string;
   urgency: Urgency;
 };
@@ -48,7 +47,11 @@ export async function submitMaintenance(
   return { ok: true };
 }
 
-/** Close or reopen a request. RD only — enforced by RLS as well. */
+/**
+ * Close or reopen a request. RD only — enforced by RLS as well. The update
+ * returns the row it touched: zero rows (unknown id, or RLS hid it) is a
+ * failure, not a silent ok.
+ */
 export async function setMaintenanceStatus(
   id: string,
   status: "open" | "done",
@@ -59,15 +62,19 @@ export async function setMaintenanceStatus(
   }
 
   const supabase = await createClient();
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("maintenance_requests")
     .update(
       status === "done"
         ? { status, done_by: staff.id, done_at: new Date().toISOString() }
         : { status, done_by: null, done_at: null },
     )
-    .eq("id", id);
+    .eq("id", id)
+    .select("id");
   if (error) return { ok: false, error: error.message };
+  if (!data || data.length === 0) {
+    return { ok: false, error: "That request wasn't found — reload the page." };
+  }
 
   revalidatePath("/admin/submissions");
   return { ok: true };

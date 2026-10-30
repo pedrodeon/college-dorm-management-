@@ -45,7 +45,7 @@ const valid = (entry) =>
   typeof entry?.name === "string" && entry.name.trim() &&
   typeof entry?.email === "string" && entry.email.includes("@") &&
   (entry?.role === "ra" || entry?.role === "rd");
-const bad = roster.filter((e) => !valid(e));
+const bad = Array.isArray(roster) ? roster.filter((e) => !valid(e)) : [];
 if (!Array.isArray(roster) || roster.length === 0 || bad.length > 0) {
   console.error("Roster must be a non-empty array of { name, email, role: 'ra' | 'rd' }.");
   if (bad.length) console.error("Bad entries:", JSON.stringify(bad));

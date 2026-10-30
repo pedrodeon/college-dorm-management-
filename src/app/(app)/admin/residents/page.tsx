@@ -7,6 +7,7 @@ import {
   type RoomChoice,
 } from "@/components/admin/residents-manager";
 import { getCurrentTerm } from "@/lib/current-term";
+import { compareTermsNewestFirst } from "@/lib/terms";
 import type { OccupancyStatus } from "@/lib/types";
 import { PageTitle } from "@/components/ui/typography";
 import { Card } from "@/components/ui/card";
@@ -92,9 +93,12 @@ export default async function AdminResidentsPage() {
       inspection_count: o.inspections?.[0]?.count ?? 0,
       room_label: `${o.rooms?.hallways?.name ?? "?"} · Room ${o.rooms?.room_number ?? "?"}`,
     }))
+    // Newest term first (by year and season, not alphabetically — Spring
+    // would otherwise sit above Fall), then by name.
     .sort(
       (a, b) =>
-        b.term.localeCompare(a.term) || a.full_name.localeCompare(b.full_name),
+        compareTermsNewestFirst(a.term, b.term) ||
+        a.full_name.localeCompare(b.full_name),
     );
 
   return (

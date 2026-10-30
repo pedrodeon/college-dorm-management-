@@ -11,16 +11,9 @@ import {
   type Urgency,
 } from "@/app/(app)/maintenance/actions";
 
-function todayISO() {
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-}
-
 export function MaintenanceForm() {
   const router = useRouter();
   const [location, setLocation] = useState("");
-  const [date, setDate] = useState(todayISO());
   const [description, setDescription] = useState("");
   const [urgency, setUrgency] = useState<Urgency>("normal");
   const [error, setError] = useState<string | null>(null);
@@ -32,7 +25,6 @@ export function MaintenanceForm() {
     startTransition(async () => {
       const result = await submitMaintenance({
         location,
-        date,
         description,
         urgency,
       });
@@ -64,27 +56,18 @@ export function MaintenanceForm() {
       {error && <Alert tone="error">{error}</Alert>}
 
       <Card variant="box">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <label className="flex flex-col gap-1 text-sm">
-            <span className="font-medium">Where is the problem?</span>
-            <input
-              type="text"
-              value={location}
-              onChange={(e) => setLocation(e.target.value)}
-              placeholder="e.g. Room 213, Lebanon 2 bathroom, front stairwell"
-              className="rounded-xl border border-line px-3 py-2 text-base"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-sm">
-            <span className="font-medium">Date noticed</span>
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="rounded-xl border border-line px-3 py-2 text-base"
-            />
-          </label>
-        </div>
+        {/* No "date noticed": the request's created_at is the record, and a
+            field the row never stored would only pretend otherwise. */}
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="font-medium">Where is the problem?</span>
+          <input
+            type="text"
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
+            placeholder="e.g. Room 213, Lebanon 2 bathroom, front stairwell"
+            className="rounded-xl border border-line px-3 py-2 text-base"
+          />
+        </label>
 
         <label className="mt-3 flex flex-col gap-1 text-sm">
           <span className="font-medium">What&rsquo;s broken?</span>

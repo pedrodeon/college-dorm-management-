@@ -64,6 +64,16 @@ export function HallwayRoster({
   }
 
   function flipAll(makePresent: boolean) {
+    // "Mark all away" writes a permanent presence event per checked-in
+    // resident; a mis-tap on the break-day screen shouldn't do that silently.
+    if (
+      !makePresent &&
+      !confirm(
+        `Mark all ${checkedIn.length} checked-in ${checkedIn.length === 1 ? "resident" : "residents"} away? Each one is recorded in presence history.`,
+      )
+    ) {
+      return;
+    }
     setError(null);
     startTransition(async () => {
       setOptimistic({

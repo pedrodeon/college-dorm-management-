@@ -32,6 +32,27 @@ import { gateProgress, type GateInspection } from "@/lib/occupancy-gate";
  * at a time.
  */
 
+/** How many images are fetched from storage at once for one record. */
+const DOWNLOAD_CONCURRENCY = 4;
+
+/** `Promise.all` with at most `limit` tasks in flight; results keep order. */
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 /** One stored record, resolved into the renderer's input (images included). */
 export async function toPdfData(
   supabase: SupabaseClient,
@@ -47,11 +68,12 @@ export async function toPdfData(
 
   const resident = inspection.occupancies.people;
   const items = sortedItems(inspection);
-  const roles = new Set(inspection.inspection_signatures.map((s) => s.role));
   const waiver = inspection.inspection_signature_waivers;
 
-  const signatures: PdfSignature[] = await Promise.all(
-    inspection.inspection_signatures.map(async (s) => ({
+  const signatures: PdfSignature[] = await mapLimit(
+    inspection.inspection_signatures,
+    DOWNLOAD_CONCURRENCY,
+    async (s) => ({
       role: s.role,
       signedAt: s.signed_at,
       signerName:
@@ -59,16 +81,15 @@ export async function toPdfData(
           ? (resident?.full_name ?? "Resident")
           : staffName(s.captured),
       png: await download(s.storage_path),
-    })),
+    }),
   );
 
-  const photos: PdfPhoto[] = await Promise.all(
+  const photos: PdfPhoto[] = await mapLimit(
     items.flatMap((item) =>
-      item.inspection_photos.map(async (p) => ({
-        itemName: item.item_name,
-        jpeg: await download(p.storage_path),
-      })),
+      item.inspection_photos.map((p) => ({ itemName: item.item_name, path: p.storage_path })),
     ),
+    DOWNLOAD_CONCURRENCY,
+    async (p) => ({ itemName: p.itemName, jpeg: await download(p.path) }),
   );
 
   return {
@@ -89,23 +110,31 @@ export async function toPdfData(
     inspectionNote: inspection.notes,
     photos,
     signatures,
-    waiver:
-      !roles.has("resident") && waiver
-        ? {
-            reason: waiver.reason,
-            recordedBy: staffName(waiver.users),
-            recordedAt: waiver.created_at,
-          }
-        : null,
+    // Everything recorded prints, including a waiver beside a signature the
+    // resident gave later; the renderer decides where each goes.
+    waiver: waiver
+      ? {
+          reason: waiver.reason,
+          recordedBy: staffName(waiver.users),
+          recordedAt: waiver.created_at,
+        }
+      : null,
   };
 }
 
-export type HallwayCheckins = {
-  hallwayName: string;
-  /** Ordered by room number. One per stay that is `checked_in` right now and
-      has a complete, signed move-in. */
-  inspectionIds: string[];
-};
+export type HallwayCheckins =
+  | {
+      kind: "found";
+      hallwayName: string;
+      /** Ordered by room number. One per stay that is `checked_in` right now
+          and has a complete, signed move-in. */
+      inspectionIds: string[];
+    }
+  /** No such hallway (or none the caller may see). */
+  | { kind: "not_found" }
+  /** A query failed. Distinct from an empty hallway: "nothing to print" and
+      "couldn't look" must never read the same. */
+  | { kind: "error" };
 
 /**
  * Which move-in records belong in a hallway's packet.
@@ -137,15 +166,16 @@ export type HallwayCheckins = {
 export async function collectHallwayCheckins(
   supabase: SupabaseClient,
   hallwayId: string,
-): Promise<HallwayCheckins | null> {
-  const { data: hallway } = await supabase
+): Promise<HallwayCheckins> {
+  const { data: hallway, error: hallwayError } = await supabase
     .from("hallways")
     .select("id, name")
     .eq("id", hallwayId)
-    .single();
-  if (!hallway) return null;
+    .maybeSingle();
+  if (hallwayError) return { kind: "error" };
+  if (!hallway) return { kind: "not_found" };
 
-  const { data: rooms } = await supabase
+  const { data: rooms, error: roomsError } = await supabase
     .from("rooms")
     .select("room_number, current_residents ( id, occupancy_status )")
     .eq("hallway_id", hallwayId)
@@ -155,14 +185,15 @@ export async function collectHallwayCheckins(
         current_residents: { id: string; occupancy_status: string }[];
       }[]
     >();
+  if (roomsError) return { kind: "error" };
 
   const checkedIn = checkedInInRoomOrder(rooms ?? []);
 
   if (checkedIn.length === 0) {
-    return { hallwayName: hallway.name, inspectionIds: [] };
+    return { kind: "found", hallwayName: hallway.name, inspectionIds: [] };
   }
 
-  const { data: inspections } = await supabase
+  const { data: inspections, error: inspectionsError } = await supabase
     .from("inspections")
     .select(
       `id, occupancy_id, type, timestamp,
@@ -174,6 +205,7 @@ export async function collectHallwayCheckins(
       checkedIn.map((c) => c.occupancyId),
     )
     .overrideTypes<(GateInspection & { occupancy_id: string })[]>();
+  if (inspectionsError) return { kind: "error" };
 
   const byStay = new Map<string, GateInspection[]>();
   for (const i of inspections ?? []) {
@@ -187,7 +219,7 @@ export async function collectHallwayCheckins(
     .filter((p): p is NonNullable<typeof p> => p !== null && p.signatures === 2)
     .map((p) => p.inspectionId);
 
-  return { hallwayName: hallway.name, inspectionIds };
+  return { kind: "found", hallwayName: hallway.name, inspectionIds };
 }
 
 /** Load and resolve one record, or null if it isn't a printable one. */
@@ -212,4 +244,20 @@ export async function loadPrintableRecord(
       occupancies: NonNullable<InspectionRecord["occupancies"]>;
     },
   );
+}
+
+/**
+ * The packet's records, one at a time: each is loaded (images included)
+ * only when the renderer asks for it, so a hallway of twenty rooms never
+ * holds twenty rooms' photos in memory at once. Unprintable ids are skipped,
+ * exactly as `loadPrintableRecord` would answer for them individually.
+ */
+export async function* printableRecords(
+  supabase: SupabaseClient,
+  inspectionIds: string[],
+): AsyncGenerator<InspectionPdfData> {
+  for (const id of inspectionIds) {
+    const record = await loadPrintableRecord(supabase, id);
+    if (record) yield record;
+  }
 }

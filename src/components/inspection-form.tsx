@@ -7,7 +7,12 @@ import {
   type InspectionItemInput,
 } from "@/app/(app)/rooms/[id]/inspections/new/actions";
 import { createClient } from "@/lib/supabase/client";
-import { downscalePhoto, PHOTO_BUCKET } from "@/lib/photos";
+import {
+  downscalePhoto,
+  PHOTO_BUCKET,
+  PHOTO_MAX_BYTES,
+  PHOTOS_PER_ITEM_MAX,
+} from "@/lib/photos";
 import type {
   CreatableInspectionType,
   InventoryItem,
@@ -20,9 +25,16 @@ import { SectionLabel } from "@/components/ui/typography";
 
 const CONDITIONS: ItemCondition[] = ["good", "fair", "damaged", "missing"];
 
-// A photo picked in the form but not yet uploaded. Uploads happen on save so
-// an abandoned form leaves nothing in the bucket.
-type PendingPhoto = { file: File; previewUrl: string };
+// A photo picked in the form but not yet uploaded. It is decoded, downscaled
+// and size-checked the moment it is picked, so by the time Save runs every
+// photo is known to be uploadable — a batch never fails halfway through and
+// strands the uploads that went before. Uploads happen on save so an
+// abandoned form leaves nothing in the bucket.
+type PendingPhoto = { blob: Blob; previewUrl: string };
+
+// One item on the sheet. `condition` starts null: an item nobody looked at
+// must never be recorded as "good" and signed for.
+type Row = { item_id: string; condition: ItemCondition | null; note: string };
 
 export type FormResident = { id: string; full_name: string };
 
@@ -49,15 +61,21 @@ export function InspectionForm({
     defaultResidentId ?? residents[0]?.id ?? "",
   );
   const [notes, setNotes] = useState("");
-  const [rows, setRows] = useState<InspectionItemInput[]>(
-    template.map((t) => ({ item_id: t.id, condition: "good", note: "", photos: [] })),
+  const [rows, setRows] = useState<Row[]>(
+    template.map((t) => ({ item_id: t.id, condition: null, note: "" })),
   );
   const [pendingPhotos, setPendingPhotos] = useState<
     Record<string, PendingPhoto[]>
   >({});
+  const [preparing, setPreparing] = useState(0); // photos being decoded
+  const [photoError, setPhotoError] = useState<string | null>(null);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+
+  const remaining = rows.filter((r) => r.condition === null).length;
+  const canSave =
+    !isPending && preparing === 0 && residentId !== "" && remaining === 0;
 
   // Release preview object URLs when the form unmounts.
   useEffect(() => {
@@ -69,22 +87,43 @@ export function InspectionForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function setRow(itemId: string, patch: Partial<InspectionItemInput>) {
+  function setRow(itemId: string, patch: Partial<Row>) {
     setRows((prev) =>
       prev.map((r) => (r.item_id === itemId ? { ...r, ...patch } : r)),
     );
   }
 
-  function addPhotos(itemId: string, files: FileList | null) {
+  async function addPhotos(itemId: string, itemName: string, files: FileList | null) {
     if (!files || files.length === 0) return;
-    const added = [...files].map((file) => ({
-      file,
-      previewUrl: URL.createObjectURL(file),
-    }));
-    setPendingPhotos((prev) => ({
-      ...prev,
-      [itemId]: [...(prev[itemId] ?? []), ...added],
-    }));
+    setPhotoError(null);
+    const room = PHOTOS_PER_ITEM_MAX - (pendingPhotos[itemId]?.length ?? 0);
+    const picked = [...files];
+    const kept = picked.slice(0, Math.max(0, room));
+    const problems: string[] = [];
+    if (kept.length < picked.length) {
+      problems.push(
+        `Up to ${PHOTOS_PER_ITEM_MAX} photos per item — ${itemName} already has ${pendingPhotos[itemId]?.length ?? 0}, so ${picked.length - kept.length} of these were not added.`,
+      );
+    }
+
+    setPreparing((n) => n + kept.length);
+    const prepared = await Promise.all(
+      kept.map((file) => preparePhoto(file).catch((e: Error) => e.message)),
+    );
+    setPreparing((n) => n - kept.length);
+
+    const added: PendingPhoto[] = [];
+    for (const result of prepared) {
+      if (typeof result === "string") problems.push(result);
+      else added.push(result);
+    }
+    if (added.length > 0) {
+      setPendingPhotos((prev) => ({
+        ...prev,
+        [itemId]: [...(prev[itemId] ?? []), ...added],
+      }));
+    }
+    if (problems.length > 0) setPhotoError(problems.join(" "));
   }
 
   function removePhoto(itemId: string, previewUrl: string) {
@@ -96,11 +135,13 @@ export function InspectionForm({
   }
 
   function submit() {
+    if (!canSave) return;
     setError(null);
     startTransition(async () => {
       // 1. Upload pending photos to the private bucket under one group id.
       //    Runs in the browser under the caller's session; storage RLS allows
       //    staff INSERT only. Photos become immutable the moment they land.
+      //    Every blob was decoded and size-checked when it was picked.
       const supabase = createClient();
       const groupId = crypto.randomUUID();
       const pathsByItem: Record<string, string[]> = {};
@@ -113,11 +154,10 @@ export function InspectionForm({
       for (const [itemId, photos] of Object.entries(pendingPhotos)) {
         for (const photo of photos) {
           setUploadStatus(`Uploading photos… (${done + 1}/${total})`);
-          const blob = await downscalePhoto(photo.file);
           const path = `${groupId}/${itemId}/${done}.jpg`;
           const { error: uploadError } = await supabase.storage
             .from(PHOTO_BUCKET)
-            .upload(path, blob, { contentType: "image/jpeg" });
+            .upload(path, photo.blob, { contentType: "image/jpeg" });
           if (uploadError) {
             setUploadStatus(null);
             setError(`Photo upload failed: ${uploadError.message}`);
@@ -130,16 +170,19 @@ export function InspectionForm({
       setUploadStatus(total > 0 ? "Saving inspection…" : null);
 
       // 2. Record the snapshot (items + photo paths) atomically via the RPC.
+      const items: InspectionItemInput[] = rows.map((r) => ({
+        item_id: r.item_id,
+        condition: r.condition!, // canSave guarantees every row has one
+        note: r.note,
+        photos: pathsByItem[r.item_id] ?? [],
+      }));
       const result = await createInspection({
         roomId,
         // The resident picker's value is the occupancy id.
         occupancyId: residentId || null,
         type,
         notes,
-        items: rows.map((r) => ({
-          ...r,
-          photos: pathsByItem[r.item_id] ?? [],
-        })),
+        items,
       });
       // Only returns on error; success redirects server-side.
       setUploadStatus(null);
@@ -150,6 +193,7 @@ export function InspectionForm({
   return (
     <div className="flex flex-col gap-6">
       {error && <Alert tone="error">{error}</Alert>}
+      {photoError && <Alert tone="error">{photoError}</Alert>}
 
       <div className="flex flex-wrap gap-4">
         <label className="flex flex-col gap-1 text-sm">
@@ -192,7 +236,14 @@ export function InspectionForm({
       )}
 
       <div>
-        <SectionLabel>Condition — Room {roomNumber}</SectionLabel>
+        <SectionLabel>
+          Condition — Room {roomNumber}
+          <span className="ml-2 font-normal normal-case tracking-normal text-gray-400">
+            {remaining === 0
+              ? "every item rated"
+              : `${remaining} of ${template.length} items still need a condition`}
+          </span>
+        </SectionLabel>
         <Card as="ul" variant="list" className="mt-2">
           {template.map((item) => {
             const row = rows.find((r) => r.item_id === item.id)!;
@@ -207,15 +258,20 @@ export function InspectionForm({
               >
                 <span className="w-48 text-sm font-medium">{item.name}</span>
                 <select
-                  value={row.condition}
+                  value={row.condition ?? ""}
                   onChange={(e) =>
                     setRow(item.id, {
-                      condition: e.target.value as ItemCondition,
+                      condition: (e.target.value || null) as ItemCondition | null,
                     })
                   }
                   aria-label={`${item.name} condition`}
-                  className="rounded-md border border-gray-300 px-2 py-1.5 text-sm capitalize"
+                  className={`rounded-md border px-2 py-1.5 text-sm capitalize ${
+                    row.condition === null
+                      ? "border-gray-400 text-gray-500"
+                      : "border-gray-300"
+                  }`}
                 >
+                  <option value="">Choose…</option>
                   {CONDITIONS.map((c) => (
                     <option key={c} value={c} className="capitalize">
                       {c}
@@ -231,18 +287,27 @@ export function InspectionForm({
                   className="min-w-40 flex-1 rounded-md border border-gray-300 px-2 py-1.5 text-sm"
                 />
 
-                {/* Photos: camera on phones (capture), file picker at a desk. */}
-                <label className="cursor-pointer rounded-md border border-gray-300 px-2 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100">
+                {/* Photos: camera on phones (capture), file picker at a desk.
+                    Capped per item — each photo is downloaded again for every
+                    PDF the record appears in. */}
+                <label
+                  className={`rounded-md border border-gray-300 px-2 py-1.5 text-xs font-medium text-gray-600 ${
+                    (pendingPhotos[item.id]?.length ?? 0) >= PHOTOS_PER_ITEM_MAX
+                      ? "cursor-not-allowed opacity-50"
+                      : "cursor-pointer hover:bg-gray-100"
+                  }`}
+                >
                   + Photo
                   <input
                     type="file"
                     accept="image/*"
                     capture="environment"
                     multiple
+                    disabled={(pendingPhotos[item.id]?.length ?? 0) >= PHOTOS_PER_ITEM_MAX}
                     className="hidden"
                     aria-label={`${item.name} photos`}
                     onChange={(e) => {
-                      addPhotos(item.id, e.target.files);
+                      void addPhotos(item.id, item.name, e.target.files);
                       e.target.value = "";
                     }}
                   />
@@ -286,8 +351,8 @@ export function InspectionForm({
         />
       </label>
 
-      <div className="flex gap-3">
-        <Button size="lg" onClick={submit} disabled={isPending || residentId === ""}>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button size="lg" onClick={submit} disabled={!canSave}>
           {isPending ? (uploadStatus ?? "Saving…") : "Save inspection"}
         </Button>
         <Button
@@ -298,7 +363,26 @@ export function InspectionForm({
         >
           Cancel
         </Button>
+        {preparing > 0 ? (
+          <span className="text-xs text-gray-400">Preparing photos…</span>
+        ) : remaining > 0 ? (
+          <span className="text-xs text-gray-400">
+            Rate every item to save ({remaining} left).
+          </span>
+        ) : null}
       </div>
     </div>
   );
+}
+
+/** Decode, downscale and size-check one picked file. Rejects with a sentence
+    naming the problem, so nothing undecodable or oversized is ever uploaded. */
+async function preparePhoto(file: File): Promise<PendingPhoto> {
+  const blob = await downscalePhoto(file);
+  if (blob.size > PHOTO_MAX_BYTES) {
+    throw new Error(
+      `${file.name || "A photo"} is still over ${Math.round(PHOTO_MAX_BYTES / 1024 / 1024)} MB after downscaling and can't be uploaded.`,
+    );
+  }
+  return { blob, previewUrl: URL.createObjectURL(blob) };
 }

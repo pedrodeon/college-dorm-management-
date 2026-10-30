@@ -16,6 +16,7 @@ import { Card } from "@/components/ui/card";
 import { SearchInput } from "@/components/ui/search-input";
 import { SectionLabel } from "@/components/ui/typography";
 import { matchesResident } from "@/lib/resident-search";
+import { compareTermsNewestFirst } from "@/lib/terms";
 
 export type RoomChoice = { id: string; label: string };
 
@@ -36,18 +37,23 @@ export type AdminOccupancy = ResidentInput & {
   inspection_count: number;
 };
 
-const EMPTY: ResidentInput = {
-  full_name: "",
-  student_id: "",
-  room_id: "",
-  phone: "",
-  emergency_contact: "",
-};
-
 const STATUS_LABEL: Record<OccupancyStatus, string> = {
   expected: "expected",
   checked_in: "checked in",
   checked_out: "checked out",
+};
+
+/** A refusal, pinned to the stay it was about so it renders on that row. */
+type RowError = { id: string; message: string };
+
+/** What a stay row can ask the manager to do. */
+type StayHandlers = {
+  edit: (id: string) => void;
+  cancelEdit: () => void;
+  save: (stay: AdminOccupancy, input: ResidentInput) => void;
+  archive: (stay: AdminOccupancy) => void;
+  unarchive: (stay: AdminOccupancy) => void;
+  remove: (stay: AdminOccupancy) => void;
 };
 
 export function ResidentsManager({
@@ -61,22 +67,64 @@ export function ResidentsManager({
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  // Screen-level messages (the term control) vs. a refusal about one stay,
+  // which renders on that row — on a phone the top of a 200-row list is a
+  // long way from the button that was tapped.
   const [error, setError] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<RowError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   function run(
     fn: () => Promise<{ ok: boolean; error?: string }>,
     onOk?: () => void,
+    stayId?: string,
   ) {
     setError(null);
+    setRowError(null);
     setNotice(null);
     startTransition(async () => {
       const res = await fn();
-      if (!res.ok) setError(res.error ?? "Something went wrong.");
-      else onOk?.();
+      if (res.ok) {
+        onOk?.();
+        return;
+      }
+      const message = res.error ?? "Something went wrong.";
+      if (stayId) setRowError({ id: stayId, message });
+      else setError(message);
     });
   }
+
+  const handlers: StayHandlers = {
+    edit: (id) => {
+      setEditingId(id);
+      setError(null);
+      setRowError(null);
+    },
+    cancelEdit: () => setEditingId(null),
+    save: (stay, input) =>
+      run(
+        () => updateResident(stay.id, stay.person_id, input),
+        () => setEditingId(null),
+        stay.id,
+      ),
+    archive: (stay) => {
+      // Archiving a LIVE stay drops the resident off the hallway roster and
+      // the break safety list; that deserves a second look.
+      if (
+        stay.occupancy_status !== "checked_out" &&
+        !confirm(
+          `${stay.full_name} is still ${STATUS_LABEL[stay.occupancy_status]} for ${stay.term}. Archiving hides them from the dashboard, hallway roster and desk. Archive anyway?`,
+        )
+      ) {
+        return;
+      }
+      run(() => setOccupancyArchived(stay.id, true), undefined, stay.id);
+    },
+    unarchive: (stay) =>
+      run(() => setOccupancyArchived(stay.id, false), undefined, stay.id),
+    remove: (stay) => run(() => deleteOccupancy(stay.id), undefined, stay.id),
+  };
 
   // The same matcher the search overlay uses — a name partial or a student-ID
   // prefix — applied to the rows already on the page, so filtering here costs
@@ -116,6 +164,7 @@ export function ResidentsManager({
 
       <TermControl
         currentTerm={currentTerm}
+        stays={stays}
         disabled={isPending}
         onSave={(term) =>
           run(() => setCurrentTerm(term), () =>
@@ -143,20 +192,9 @@ export function ResidentsManager({
         stays={current}
         rooms={rooms}
         editingId={editingId}
+        rowError={rowError}
         isPending={isPending}
-        onEdit={(id) => {
-          setEditingId(id);
-          setError(null);
-        }}
-        onCancelEdit={() => setEditingId(null)}
-        onSave={(stay, input) =>
-          run(() => updateResident(stay.id, stay.person_id, input), () =>
-            setEditingId(null),
-          )
-        }
-        onArchive={(stay) => run(() => setOccupancyArchived(stay.id, true))}
-        onUnarchive={(stay) => run(() => setOccupancyArchived(stay.id, false))}
-        onDelete={(stay) => run(() => deleteOccupancy(stay.id))}
+        on={handlers}
       />
 
       {other.length > 0 && (
@@ -166,20 +204,9 @@ export function ResidentsManager({
           stays={other}
           rooms={rooms}
           editingId={editingId}
+          rowError={rowError}
           isPending={isPending}
-          onEdit={(id) => {
-            setEditingId(id);
-            setError(null);
-          }}
-          onCancelEdit={() => setEditingId(null)}
-          onSave={(stay, input) =>
-            run(() => updateResident(stay.id, stay.person_id, input), () =>
-              setEditingId(null),
-            )
-          }
-          onArchive={(stay) => run(() => setOccupancyArchived(stay.id, true))}
-          onUnarchive={(stay) => run(() => setOccupancyArchived(stay.id, false))}
-          onDelete={(stay) => run(() => deleteOccupancy(stay.id))}
+          on={handlers}
         />
       )}
     </div>
@@ -188,14 +215,42 @@ export function ResidentsManager({
 
 function TermControl({
   currentTerm,
+  stays,
   disabled,
   onSave,
 }: {
   currentTerm: string;
+  stays: AdminOccupancy[];
   disabled: boolean;
   onSave: (term: string) => void;
 }) {
   const [term, setTerm] = useState(currentTerm);
+  const trimmed = term.trim();
+  // Every term on record, newest first — offered as suggestions so the roll-
+  // over is a pick, not a retype that could land one character off.
+  const knownTerms = [...new Set(stays.map((s) => s.term))].sort(
+    compareTermsNewestFirst,
+  );
+  const staysInTarget = stays.filter(
+    (s) => s.term === trimmed && !s.is_archived,
+  ).length;
+
+  function save() {
+    // A typo here empties every everyday screen, so say what the switch
+    // will show before it happens.
+    const outcome =
+      staysInTarget === 0
+        ? `No stays are in "${trimmed}" yet, so the dashboard, hallway and desk screens will be empty until stays are opened in it.`
+        : `${staysInTarget} ${staysInTarget === 1 ? "stay is" : "stays are"} in "${trimmed}"; everyday screens will show only those.`;
+    if (
+      confirm(
+        `Switch the current term from "${currentTerm || "none"}" to "${trimmed}"?\n\n${outcome} Nothing is deleted.`,
+      )
+    ) {
+      onSave(trimmed);
+    }
+  }
+
   return (
     <Card variant="box">
       <h3 className="text-sm font-semibold">Current term</h3>
@@ -211,16 +266,29 @@ function TermControl({
             value={term}
             onChange={(e) => setTerm(e.target.value)}
             placeholder="Fall 2026"
+            list="known-terms"
             className="rounded-md border border-gray-300 px-3 py-2 text-base"
           />
+          <datalist id="known-terms">
+            {knownTerms.map((t) => (
+              <option key={t} value={t} />
+            ))}
+          </datalist>
         </label>
         <Button
-          onClick={() => onSave(term)}
-          disabled={disabled || term.trim() === "" || term.trim() === currentTerm}
+          onClick={save}
+          disabled={disabled || trimmed === "" || trimmed === currentTerm}
         >
           Save term
         </Button>
       </div>
+      {trimmed !== "" && trimmed !== currentTerm && (
+        <p className="mt-2 text-xs text-gray-600">
+          {staysInTarget === 0
+            ? `No stays are in "${trimmed}" yet.`
+            : `${staysInTarget} ${staysInTarget === 1 ? "stay" : "stays"} in "${trimmed}".`}
+        </p>
+      )}
     </Card>
   );
 }
@@ -231,26 +299,18 @@ function StayList({
   stays,
   rooms,
   editingId,
+  rowError,
   isPending,
-  onEdit,
-  onCancelEdit,
-  onSave,
-  onArchive,
-  onUnarchive,
-  onDelete,
+  on,
 }: {
   heading: string;
   note?: string;
   stays: AdminOccupancy[];
   rooms: RoomChoice[];
   editingId: string | null;
+  rowError: RowError | null;
   isPending: boolean;
-  onEdit: (id: string) => void;
-  onCancelEdit: () => void;
-  onSave: (stay: AdminOccupancy, input: ResidentInput) => void;
-  onArchive: (stay: AdminOccupancy) => void;
-  onUnarchive: (stay: AdminOccupancy) => void;
-  onDelete: (stay: AdminOccupancy) => void;
+  on: StayHandlers;
 }) {
   return (
     <div>
@@ -263,6 +323,11 @@ function StayList({
           {stays.map((stay) =>
             editingId === stay.id ? (
               <li key={stay.id} className="p-4">
+                {rowError?.id === stay.id && (
+                  <Alert tone="error" className="mb-3">
+                    {rowError.message}
+                  </Alert>
+                )}
                 <ResidentFields
                   title={`Edit ${stay.full_name} — ${stay.term}`}
                   rooms={rooms}
@@ -274,10 +339,9 @@ function StayList({
                         ? "This stay is complete and keeps its room."
                         : undefined
                   }
-                  submitLabel="Save"
                   disabled={isPending}
-                  onCancel={onCancelEdit}
-                  onSubmit={(input) => onSave(stay, input)}
+                  onCancel={on.cancelEdit}
+                  onSubmit={(input) => on.save(stay, input)}
                 />
               </li>
             ) : (
@@ -297,7 +361,9 @@ function StayList({
                     {stay.room_label} · {stay.term} ·{" "}
                     {STATUS_LABEL[stay.occupancy_status]}
                     {stay.is_archived && (
-                      <span className="ml-1.5 rounded bg-accent-soft px-1.5 py-0.5 font-medium text-ink">
+                      // Neutral grey: archived is a settled state, not one
+                      // that needs attention, so it never gets the accent.
+                      <span className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 font-medium text-gray-600">
                         archived
                       </span>
                     )}
@@ -318,14 +384,14 @@ function StayList({
                   )}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button variant="subtle" size="sm" onClick={() => onEdit(stay.id)}>
+                  <Button variant="subtle" size="sm" onClick={() => on.edit(stay.id)}>
                     Edit
                   </Button>
                   {stay.is_archived ? (
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => onUnarchive(stay)}
+                      onClick={() => on.unarchive(stay)}
                       disabled={isPending}
                     >
                       Unarchive
@@ -336,7 +402,7 @@ function StayList({
                       // take, so it stops looking like the quiet one.
                       variant={stay.inspection_count > 0 ? "primary" : "subtle"}
                       size="sm"
-                      onClick={() => onArchive(stay)}
+                      onClick={() => on.archive(stay)}
                       disabled={isPending}
                     >
                       Archive
@@ -363,7 +429,7 @@ function StayList({
                             `Delete ${stay.full_name}'s ${stay.term} stay and its events? Archiving keeps the history instead.`,
                           )
                         ) {
-                          onDelete(stay);
+                          on.remove(stay);
                         }
                       }}
                       disabled={isPending}
@@ -372,6 +438,11 @@ function StayList({
                     </Button>
                   )}
                 </div>
+                {rowError?.id === stay.id && (
+                  <Alert tone="error" className="basis-full">
+                    {rowError.message}
+                  </Alert>
+                )}
               </li>
             ),
           )}
@@ -383,34 +454,29 @@ function StayList({
 
 function ResidentFields({
   title,
-  hint,
   rooms,
   initial,
   roomLocked,
-  submitLabel,
   disabled,
   onSubmit,
   onCancel,
 }: {
   title: string;
-  hint?: string;
   rooms: RoomChoice[];
-  initial?: ResidentInput;
+  initial: ResidentInput;
   /** Why the room can't be changed here, when it can't. */
   roomLocked?: string;
-  submitLabel: string;
   disabled: boolean;
-  onSubmit: (input: ResidentInput, reset: () => void) => void;
-  onCancel?: () => void;
+  onSubmit: (input: ResidentInput) => void;
+  onCancel: () => void;
 }) {
-  const [form, setForm] = useState<ResidentInput>(initial ?? EMPTY);
+  const [form, setForm] = useState<ResidentInput>(initial);
   function set(patch: Partial<ResidentInput>) {
     setForm((f) => ({ ...f, ...patch }));
   }
   return (
     <Card variant="box">
       <h3 className="text-sm font-semibold">{title}</h3>
-      {hint && <p className="mt-0.5 text-xs text-gray-500">{hint}</p>}
       <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Field label="Full name" value={form.full_name} onChange={(v) => set({ full_name: v })} />
         <Field label="Student ID" value={form.student_id} onChange={(v) => set({ student_id: v })} />
@@ -435,14 +501,12 @@ function ResidentFields({
         <Field label="Emergency contact" value={form.emergency_contact} onChange={(v) => set({ emergency_contact: v })} />
       </div>
       <div className="mt-3 flex gap-2">
-        <Button onClick={() => onSubmit(form, () => setForm(EMPTY))} disabled={disabled}>
-          {submitLabel}
+        <Button onClick={() => onSubmit(form)} disabled={disabled}>
+          Save
         </Button>
-        {onCancel && (
-          <Button variant="subtle" onClick={onCancel} disabled={disabled}>
-            Cancel
-          </Button>
-        )}
+        <Button variant="subtle" onClick={onCancel} disabled={disabled}>
+          Cancel
+        </Button>
       </div>
     </Card>
   );

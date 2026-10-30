@@ -9,20 +9,19 @@ import { submitIncident } from "@/app/(app)/reports/incident/actions";
 
 export type RoomOption = { id: string; label: string };
 
-/** Local date/time for the field defaults — the incident is usually "now". */
-function nowDefaults() {
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return {
-    date: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
-    time: `${pad(now.getHours())}:${pad(now.getMinutes())}`,
-  };
-}
-
-export function IncidentForm({ rooms }: { rooms: RoomOption[] }) {
+export function IncidentForm({
+  rooms,
+  defaults,
+}: {
+  rooms: RoomOption[];
+  /** "Now" on the building's clock (America/Chicago), from the server — the
+      incident is usually happening as it's filed. Server-provided so the
+      first paint and hydration agree and the stamp is Chicago wherever the
+      RA's phone thinks it is. */
+  defaults: { date: string; time: string };
+}) {
   const router = useRouter();
   const [roomId, setRoomId] = useState("");
-  const defaults = nowDefaults();
   const [date, setDate] = useState(defaults.date);
   const [time, setTime] = useState(defaults.time);
   const [description, setDescription] = useState("");

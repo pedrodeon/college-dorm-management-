@@ -2,12 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { searchResidents } from "@/app/(app)/search/actions";
 import {
-  SEARCH_LIMIT,
-  type ResidentResult,
-  type SearchOutcome,
-} from "@/lib/resident-search";
+  searchResidents,
+  type SearchResponse,
+} from "@/app/(app)/search/actions";
+import { SEARCH_LIMIT } from "@/lib/resident-search";
 import { StatusChip } from "@/components/ui/status-chip";
 import { SearchInput } from "@/components/ui/search-input";
 
@@ -54,7 +53,7 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
   // ever shown against the text it was actually for.
   const [answer, setAnswer] = useState<{
     query: string;
-    outcome: SearchOutcome<ResidentResult>;
+    outcome: SearchResponse;
   } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   // Server actions can't be aborted mid-flight, so every request carries a
@@ -63,7 +62,7 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
   const latest = useRef(0);
 
   const go = useCallback(
-    (hit: ResidentResult) => {
+    (hit: { id: string }) => {
       onClose();
       router.push(`/residents/${hit.id}`);
     },
@@ -88,7 +87,14 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
     }
     const timer = setTimeout(async () => {
       const ticket = ++latest.current;
-      const outcome = await searchResidents(trimmed);
+      // A rejected action (network gone, server down) must land as an
+      // answer too, or the overlay reads "Searching…" forever.
+      const outcome = await searchResidents(trimmed).catch(
+        (): SearchResponse => ({
+          kind: "error",
+          message: "Search couldn't reach the server. Check your connection and try again.",
+        }),
+      );
       if (ticket !== latest.current) return; // a newer keystroke won
       setAnswer({ query: trimmed, outcome });
     }, DEBOUNCE_MS);
@@ -110,7 +116,9 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
 
   // Only an answer to the CURRENT text counts; anything else still reads as
   // "searching", which is what it is.
-  const result = answer?.query === trimmed ? answer.outcome : null;
+  const response = answer?.query === trimmed ? answer.outcome : null;
+  const failure = response?.kind === "error" ? response.message : null;
+  const result = response && response.kind !== "error" ? response : null;
   const matches = result?.matches ?? [];
   const hasQuery = trimmed !== "";
 
@@ -148,6 +156,13 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
               Type a name, or a student ID. Only this term&rsquo;s residents
               are searched.
             </Hint>
+          ) : failure ? (
+            <p
+              role="alert"
+              className="mx-1 my-3 rounded-xl border border-red-300 bg-red-50 px-3.5 py-2.5 text-sm text-red-800"
+            >
+              {failure}
+            </p>
           ) : result === null ? (
             <Hint>Searching…</Hint>
           ) : matches.length === 0 ? (

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { markNotificationsSeen } from "@/app/(app)/notifications/actions";
 import { shiftLabel } from "@/lib/desk-shifts";
@@ -24,7 +24,7 @@ export type NotificationRow = {
   slot: number | null;
   target_id: string | null;
   created_at: string;
-  actor: { name: string } | null;
+  actor: { id: string; name: string } | null;
   other: { name: string } | null;
 };
 
@@ -67,34 +67,52 @@ function sentence(n: NotificationRow): string {
 
 /**
  * The feed. Rendering it counts as reading it: on mount the seen-watermark
- * moves to now, which clears the header bell badge. Rows newer than the
- * previous watermark keep the quiet chip highlight so you can still see
- * what was new when you opened the page.
+ * moves up to the newest row shown, which clears the header bell badge.
+ * The watermark we highlight against is frozen at first render — the
+ * action revalidates the layout, which re-renders this page with the new
+ * watermark, and without the freeze every "new" chip would vanish the
+ * moment the page opened. Your own actions never count as news.
  */
 export function NotificationList({
   rows,
   seenAt,
+  meId,
 }: {
   rows: NotificationRow[];
+  /** Newest first — rows[0] is what the watermark moves to. */
   seenAt: string | null;
+  meId: string | null;
 }) {
+  const [highlightAfter] = useState(seenAt);
+  const [seenError, setSeenError] = useState<string | null>(null);
+  const newest = rows[0]?.created_at ?? null;
+
   useEffect(() => {
-    void markNotificationsSeen();
-  }, []);
+    markNotificationsSeen(newest).then((result) => {
+      if (!result.ok) setSeenError(result.error);
+    });
+  }, [newest]);
 
   if (rows.length === 0) {
     return (
       <p className="text-sm text-gray-500">
-        Nothing yet — schedule changes on the Front Desk calendar will show up
-        here.
+        Nothing yet — Front Desk schedule changes (and, for the RD, filed
+        incidents and maintenance requests) will show up here.
       </p>
     );
   }
 
   return (
     <Card as="ul" variant="list">
+      {seenError && (
+        <li className="px-4 py-2 text-xs text-muted">
+          Couldn&rsquo;t mark these as read: {seenError}
+        </li>
+      )}
       {rows.map((n) => {
-        const isNew = seenAt === null || n.created_at > seenAt;
+        const mine = meId !== null && n.actor?.id === meId;
+        const isNew =
+          !mine && (highlightAfter === null || n.created_at > highlightAfter);
         const to = href(n);
         const body = (
           <>

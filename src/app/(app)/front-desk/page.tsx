@@ -3,6 +3,11 @@ import { getStaffContext } from "@/lib/auth";
 import { DeskShiftCalendar } from "@/components/desk-shift-calendar";
 import {
   addMonths,
+  chicagoToday,
+  daysInMonth,
+  MONTH_NAME,
+} from "@/lib/chicago-date";
+import {
   monthParam,
   parseMonthParam,
   scheduleSummary,
@@ -22,28 +27,25 @@ type ShiftRow = {
 };
 type StaffRow = { id: string; name: string; role: string };
 
-const MONTH_NAME = [
-  "January", "February", "March", "April", "May", "June", "July",
-  "August", "September", "October", "November", "December",
-];
-
 export default async function FrontDeskPage({
   searchParams,
 }: {
   searchParams: Promise<{ month?: string }>;
 }) {
   const { month: monthQuery } = await searchParams;
+  // The building's clock, not the server's: "today" and the default month
+  // must not roll over at 7 PM Chicago because the host runs on UTC.
   const now = new Date();
-  const { year, month } =
-    parseMonthParam(monthQuery) ?? {
-      year: now.getFullYear(),
-      month: now.getMonth() + 1,
-    };
+  const todayKey = chicagoToday(now);
+  const { year, month } = parseMonthParam(monthQuery) ?? {
+    year: Number(todayKey.slice(0, 4)),
+    month: Number(todayKey.slice(5, 7)),
+  };
 
   const staffContext = await getStaffContext();
   const supabase = await createClient();
   const first = `${monthParam(year, month)}-01`;
-  const last = `${monthParam(year, month)}-${new Date(year, month, 0).getDate()}`;
+  const last = `${monthParam(year, month)}-${daysInMonth(year, month)}`;
 
   const [{ data: shifts }, { data: staff }] = await Promise.all([
     supabase
@@ -105,6 +107,7 @@ export default async function FrontDeskPage({
           meId={staffContext?.id ?? null}
           isRd={staffContext?.role === "rd"}
           nowMs={now.getTime()}
+          todayKey={todayKey}
         />
       </Card>
     </section>

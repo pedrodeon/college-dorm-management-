@@ -15,11 +15,16 @@ export function InventoryManager({ items }: { items: AdminItem[] }) {
 
   const nextOrder = items.reduce((max, i) => Math.max(max, i.sort_order), 0) + 1;
 
-  function run(fn: () => Promise<{ ok: boolean; error?: string }>, onOk?: () => void) {
+  // `onError` lets a row show its own refusal next to its buttons.
+  function run(
+    fn: () => Promise<{ ok: boolean; error?: string }>,
+    onOk?: () => void,
+    onError: (message: string) => void = setError,
+  ) {
     setError(null);
     startTransition(async () => {
       const res = await fn();
-      if (!res.ok) setError(res.error ?? "Something went wrong.");
+      if (!res.ok) onError(res.error ?? "Something went wrong.");
       else onOk?.();
     });
   }
@@ -47,6 +52,10 @@ export function InventoryManager({ items }: { items: AdminItem[] }) {
         </Button>
       </Card>
 
+      <p className="-mt-2 text-xs text-gray-600">
+        Giving an item another item&rsquo;s position swaps the two.
+      </p>
+
       <Card as="ul" variant="list">
         {[...items]
           .sort((a, b) => a.sort_order - b.sort_order)
@@ -65,16 +74,23 @@ function ItemRow({
 }: {
   item: AdminItem;
   disabled: boolean;
-  run: (fn: () => Promise<{ ok: boolean; error?: string }>, onOk?: () => void) => void;
+  run: (
+    fn: () => Promise<{ ok: boolean; error?: string }>,
+    onOk?: () => void,
+    onError?: (message: string) => void,
+  ) => void;
 }) {
   const [name, setName] = useState(item.name);
   const [order, setOrder] = useState(String(item.sort_order));
+  const [error, setError] = useState<string | null>(null);
   const dirty = name !== item.name || order !== String(item.sort_order);
 
   return (
     <li className="flex flex-wrap items-center gap-2 px-4 py-2.5">
       <input
         type="number"
+        min={1}
+        step={1}
         value={order}
         onChange={(e) => setOrder(e.target.value)}
         aria-label={`${item.name} order`}
@@ -90,7 +106,10 @@ function ItemRow({
       <Button
         variant="outline"
         size="sm"
-        onClick={() => run(() => updateItem(item.id, name, Number(order)))}
+        onClick={() => {
+          setError(null);
+          run(() => updateItem(item.id, name, Number(order)), undefined, setError);
+        }}
         disabled={disabled || !dirty}
       >
         Save
@@ -99,12 +118,20 @@ function ItemRow({
         variant="danger"
         size="sm"
         onClick={() => {
-          if (confirm(`Delete "${item.name}" from the template?`)) run(() => deleteItem(item.id));
+          if (confirm(`Delete "${item.name}" from the template?`)) {
+            setError(null);
+            run(() => deleteItem(item.id), undefined, setError);
+          }
         }}
         disabled={disabled}
       >
         Delete
       </Button>
+      {error && (
+        <Alert tone="error" className="basis-full">
+          {error}
+        </Alert>
+      )}
     </li>
   );
 }

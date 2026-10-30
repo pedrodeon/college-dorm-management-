@@ -6,7 +6,9 @@ import { createClient } from "@/lib/supabase/server";
 import { BottomNav } from "@/components/bottom-nav";
 import { signOut } from "./actions";
 
-/** Notifications newer than the caller's seen-watermark. */
+/** Notifications newer than the caller's seen-watermark, not counting the
+    caller's own actions. (`actor` is null once its staff account is removed,
+    so the filter keeps nulls — a bare `neq` would drop them.) */
 async function unseenNotificationCount(userId: string): Promise<number> {
   const supabase = await createClient();
   const { data: seen } = await supabase
@@ -16,7 +18,8 @@ async function unseenNotificationCount(userId: string): Promise<number> {
     .maybeSingle();
   let query = supabase
     .from("notifications")
-    .select("id", { count: "exact", head: true });
+    .select("id", { count: "exact", head: true })
+    .or(`actor.is.null,actor.neq.${userId}`);
   if (seen?.seen_at) query = query.gt("created_at", seen.seen_at);
   const { count } = await query;
   return count ?? 0;

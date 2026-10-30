@@ -8,7 +8,8 @@ export const metadata = { title: "New maintenance request — Tudor Hall" };
 export default function NewMaintenancePage() {
   return (
     <section>
-      <PageHeader back={{ href: "/maintenance", label: "Maintenance" }} />
+      {/* Back goes home: /maintenance bounces an RA straight back here. */}
+      <PageHeader back={{ href: "/", label: "TUDOR HALL" }} />
 
       <PageTitle>Maintenance request</PageTitle>
       <p className="mt-1 text-sm text-white/60">
