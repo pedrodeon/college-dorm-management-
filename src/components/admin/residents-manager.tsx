@@ -267,6 +267,13 @@ function StayList({
                   title={`Edit ${stay.full_name} — ${stay.term}`}
                   rooms={rooms}
                   initial={stay}
+                  roomLocked={
+                    stay.occupancy_status === "checked_in"
+                      ? "Checked in — move them with Reassign room on their screen so the change is recorded."
+                      : stay.occupancy_status === "checked_out"
+                        ? "This stay is complete and keeps its room."
+                        : undefined
+                  }
                   submitLabel="Save"
                   disabled={isPending}
                   onCancel={onCancelEdit}
@@ -298,9 +305,9 @@ function StayList({
                   {stay.inspection_count > 0 && (
                     <p className="mt-1 text-xs text-gray-500">
                       This stay has {stay.inspection_count} inspection{" "}
-                      {stay.inspection_count === 1 ? "record" : "records"}.
-                      Archive it instead, or delete the inspection first (RD
-                      only).{" "}
+                      {stay.inspection_count === 1 ? "record" : "records"},
+                      which are permanent, so it can&apos;t be deleted. Archive
+                      it instead.{" "}
                       <Link
                         href={`/residents/${stay.id}#inspections`}
                         className="font-medium text-navy underline"
@@ -379,6 +386,7 @@ function ResidentFields({
   hint,
   rooms,
   initial,
+  roomLocked,
   submitLabel,
   disabled,
   onSubmit,
@@ -388,6 +396,8 @@ function ResidentFields({
   hint?: string;
   rooms: RoomChoice[];
   initial?: ResidentInput;
+  /** Why the room can't be changed here, when it can't. */
+  roomLocked?: string;
   submitLabel: string;
   disabled: boolean;
   onSubmit: (input: ResidentInput, reset: () => void) => void;
@@ -409,13 +419,17 @@ function ResidentFields({
           <select
             value={form.room_id}
             onChange={(e) => set({ room_id: e.target.value })}
-            className="rounded-md border border-gray-300 px-3 py-2 text-base"
+            disabled={roomLocked !== undefined}
+            className="rounded-md border border-gray-300 px-3 py-2 text-base disabled:bg-gray-100 disabled:text-gray-500"
           >
             <option value="">Select a room…</option>
             {rooms.map((r) => (
               <option key={r.id} value={r.id}>{r.label}</option>
             ))}
           </select>
+          {roomLocked && (
+            <span className="text-xs font-normal text-gray-500">{roomLocked}</span>
+          )}
         </label>
         <Field label="Phone" value={form.phone} onChange={(v) => set({ phone: v })} />
         <Field label="Emergency contact" value={form.emergency_contact} onChange={(v) => set({ emergency_contact: v })} />

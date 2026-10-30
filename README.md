@@ -64,8 +64,9 @@ npm install
 npm run dev
 ```
 
-Then sign in at http://localhost:3000 with a seeded staff account
-(`npm run seed:staff` prints the credentials).
+Then sign in at http://localhost:3000 with a staff account (see
+`docs/SETUP.md`: real accounts come from `npm run seed:ras` or Admin → Staff;
+`npm run seed:staff` only works on the fixture database).
 
 ## Tests
 

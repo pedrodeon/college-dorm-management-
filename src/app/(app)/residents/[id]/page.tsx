@@ -285,7 +285,9 @@ export default async function ResidentPage({
         </div>
       )}
 
-      {isRd && !isHistoric && (
+      {/* A completed stay keeps its room: moving it would rewrite where
+          the resident lived, and reassign_room refuses it anyway. */}
+      {isRd && !isHistoric && stay.occupancy_status !== "checked_out" && (
         <div className="mt-4">
           <ReassignRoom
             occupancyId={stay.id}

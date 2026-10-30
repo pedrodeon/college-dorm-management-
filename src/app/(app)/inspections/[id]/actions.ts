@@ -21,6 +21,12 @@ export async function addInspectionSignature(
   const staff = await getStaffContext();
   if (!staff) return { ok: false, error: "Not signed in as staff." };
 
+  // The database checks this too (and that the object is the caller's own
+  // upload); refusing here just keeps the error readable.
+  if (!storagePath.startsWith(`signatures/${inspectionId}/${role}-`)) {
+    return { ok: false, error: "The signature image doesn't belong to this inspection." };
+  }
+
   const supabase = await createClient();
   const { error } = await supabase.from("inspection_signatures").insert({
     inspection_id: inspectionId,

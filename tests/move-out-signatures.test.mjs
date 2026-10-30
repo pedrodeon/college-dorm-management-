@@ -13,6 +13,7 @@ import {
   assertSeededDevDatabase,
   occupancyByStudentId,
   restoreOccupancy,
+  uploadSignature,
   RA_EMAIL,
   RD_EMAIL,
 } from "./helpers.mjs";
@@ -21,10 +22,6 @@ const TESTY = "S1000101"; // checked_in in fixtures — signature path
 const DANVERS = "S1000102"; // checked_in in fixtures — waiver path
 
 let admin, anon, ra, raId, rdId, testy, danvers, inspTesty, inspDanvers;
-
-function sigPath(inspectionId, role) {
-  return `signatures/${inspectionId}/${role}-${crypto.randomUUID()}.png`;
-}
 
 async function createMoveOut(occupancyId, roomId) {
   const { data: item } = await admin
@@ -75,7 +72,7 @@ describe("the check-out gate, signature path", () => {
     await ra.from("inspection_signatures").insert({
       inspection_id: inspTesty,
       role: "resident",
-      storage_path: sigPath(inspTesty, "resident"),
+      storage_path: await uploadSignature(ra, inspTesty, "resident"),
       captured_by: raId,
     });
     const { error } = await ra.rpc("record_occupancy", {
@@ -89,7 +86,7 @@ describe("the check-out gate, signature path", () => {
     await ra.from("inspection_signatures").insert({
       inspection_id: inspTesty,
       role: "ra",
-      storage_path: sigPath(inspTesty, "ra"),
+      storage_path: await uploadSignature(ra, inspTesty, "ra"),
       captured_by: raId,
     });
     const { error } = await ra.rpc("record_occupancy", {
@@ -112,7 +109,7 @@ describe("the waiver (escape hatch)", () => {
     await ra.from("inspection_signatures").insert({
       inspection_id: inspDanvers,
       role: "ra",
-      storage_path: sigPath(inspDanvers, "ra"),
+      storage_path: await uploadSignature(ra, inspDanvers, "ra"),
       captured_by: raId,
     });
     const { error } = await ra.rpc("record_occupancy", {

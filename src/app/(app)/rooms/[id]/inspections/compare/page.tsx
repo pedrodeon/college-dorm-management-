@@ -15,6 +15,7 @@ type SideInspection = {
   room_id: string;
   rooms: { room_number: string } | null;
   inspection_items: {
+    item_name: string;
     condition: ItemCondition;
     inventory_items: { id: string; name: string; sort_order: number } | null;
     inspection_photos: { id: string; storage_path: string }[];
@@ -36,7 +37,7 @@ const SEVERITY: Record<ItemCondition, number> = {
 };
 
 const SELECT = `id, type, timestamp, room_id, rooms ( room_number ),
-   inspection_items ( condition, inventory_items ( id, name, sort_order ),
+   inspection_items ( item_name, condition, inventory_items ( id, name, sort_order ),
                       inspection_photos ( id, storage_path ) )`;
 
 export default async function ComparePage({
@@ -84,7 +85,8 @@ export default async function ComparePage({
       const inv = item.inventory_items;
       if (!inv) continue;
       const entry = byId.get(inv.id) ?? {
-        name: inv.name,
+        // The snapshot's own name, not the template's current one.
+        name: item.item_name,
         sort_order: inv.sort_order,
         leftPhotos: [],
         rightPhotos: [],
