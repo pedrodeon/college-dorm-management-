@@ -8,6 +8,7 @@ import { HighlightMark, SquareBadge } from "@/components/ui/badge";
 import type { Hallway } from "@/lib/types";
 import { PageHeader } from "@/components/ui/page-header";
 import { ResidentSearch } from "@/components/resident-search";
+import { hallwayAbbrev } from "@/lib/hallway-label";
 
 // Nested shape returned by the dashboard query below.
 type HallwayWithCounts = Hallway & {
@@ -26,13 +27,7 @@ function countsFor(hallway: HallwayWithCounts) {
     away: residents.filter(
       (r) => r.occupancy_status === "checked_in" && !r.is_present,
     ).length,
-    total: residents.length,
   };
-}
-
-// H1, L1, H2A… — the badge label, derived from the hallway's own fields.
-function abbrev(hallway: Hallway) {
-  return `${hallway.wing[0].toUpperCase()}${hallway.floor}${hallway.section ?? ""}`;
 }
 
 function greeting() {
@@ -71,28 +66,39 @@ export default async function Dashboard() {
   }
 
   // Building-wide totals for the hero stat — aggregated from the rows already
-  // fetched, no extra query.
+  // fetched, no extra query. "In the building" is checked in MINUS away, the
+  // same arithmetic the hallway tiles use: during a break the headline must
+  // not read 100% with half the hall gone. The roster is everyone expected
+  // this term plus everyone checked in; a completed stay is nobody to count.
   const totals = hallways.reduce(
     (acc, h) => {
       const c = countsFor(h);
       acc.checkedIn += c.checkedIn;
-      acc.total += c.total;
+      acc.expected += c.expected;
+      acc.away += c.away;
       return acc;
     },
-    { checkedIn: 0, total: 0 },
+    { checkedIn: 0, expected: 0, away: 0 },
   );
-  const pct =
-    totals.total > 0 ? Math.round((totals.checkedIn / totals.total) * 100) : 0;
+  const inBuilding = totals.checkedIn - totals.away;
+  const roster = totals.checkedIn + totals.expected;
+  const pct = roster > 0 ? Math.round((inBuilding / roster) * 100) : 0;
 
   return (
     <Greeting lead={`${greeting()}, ${firstName}`}>
       {/* Hero stat */}
       <StatCard
-        label="Checked in"
-        value={totals.checkedIn}
-        max={totals.total}
+        label="In the building"
+        value={inBuilding}
+        max={roster}
         pct={pct}
-        caption={<>{pct}% of the roster is in the building</>}
+        caption={
+          <>
+            {pct}% of the roster is in the building
+            {totals.away > 0 && ` · ${totals.away} away`}
+            {totals.expected > 0 && ` · ${totals.expected} not yet arrived`}
+          </>
+        }
       />
 
       {/* Quick actions — four identical tiles: one even row on wide screens,
@@ -126,7 +132,7 @@ export default async function Dashboard() {
             return (
               <li key={hallway.id}>
                 <CardLink variant="row" href={`/hallways/${hallway.id}`}>
-                  <SquareBadge>{abbrev(hallway)}</SquareBadge>
+                  <SquareBadge>{hallwayAbbrev(hallway)}</SquareBadge>
                   <div className="min-w-0">
                     <p className="font-bold text-ink">{hallway.name}</p>
                     <p className="mt-0.5 truncate text-sm text-gray-500">

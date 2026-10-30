@@ -1,6 +1,7 @@
 import "server-only";
 
 import PDFDocument from "pdfkit";
+import { ATTESTATIONS } from "@/lib/attestations";
 
 /*
  * The inspection record as a self-contained PDF — the damage-liability
@@ -16,6 +17,9 @@ const NAVY = "#16264a";
 const INK = "#11141b";
 const MUTED = "#5c6577";
 const LINE = "#d7dbe4";
+/** The one red on the page: damaged/missing items and "resident did not
+    sign" — the facts a dispute turns on. Print-safe, not the screen's orange. */
+const ALERT = "#8a1f11";
 const PAGE_W = 595.28; // A4 pt
 const MARGIN = 50;
 const CONTENT_W = PAGE_W - MARGIN * 2;
@@ -32,6 +36,8 @@ export type PdfPhoto = {
   jpeg: Buffer | null;
 };
 
+export type PdfWaiver = { reason: string; recordedBy: string; recordedAt: string };
+
 export type InspectionPdfData = {
   type: "move_in" | "move_out";
   residentName: string;
@@ -45,7 +51,7 @@ export type InspectionPdfData = {
   inspectionNote: string | null;
   photos: PdfPhoto[];
   signatures: PdfSignature[];
-  waiver: { reason: string; recordedBy: string; recordedAt: string } | null;
+  waiver: PdfWaiver | null;
 };
 
 function stamp(iso: string): string {
@@ -141,7 +147,7 @@ function drawRecord(doc: Doc, data: InspectionPdfData): void {
     doc
       .font(bad ? "Helvetica-Bold" : "Helvetica")
       .fontSize(10.5)
-      .fillColor(bad ? "#8a1f11" : INK)
+      .fillColor(bad ? ALERT : INK)
       .text(item.condition.toUpperCase(), MARGIN + CONTENT_W - 100, y, { width: 100, align: "right" });
     if (item.note) {
       doc.font("Helvetica").fontSize(9).fillColor(MUTED).text(item.note, MARGIN + 12, doc.y + 1, { width: CONTENT_W - 110 });
@@ -187,67 +193,103 @@ function drawRecord(doc: Doc, data: InspectionPdfData): void {
     }
   }
 
-  // ---- Signatures ----------------------------------------------------------
-  ensureRoom(190);
+  drawSignatures(doc, data, ensureRoom);
+}
+
+/** A box's placement on the page. */
+type Box = { x: number; top: number; w: number; h: number };
+
+const BOX_PAD = 10;
+const SIGNATURE_BOX_H = 150;
+
+/** How tall a waiver box must be to hold its reason without overflowing;
+    never shorter than a signature box so a side-by-side pair lines up. */
+function waiverBoxHeight(doc: Doc, waiver: PdfWaiver, w: number): number {
+  const reasonH = doc
+    .font("Helvetica-Oblique")
+    .fontSize(9.5)
+    .heightOfString(`“${waiver.reason}”`, { width: w - BOX_PAD * 2 });
+  // Title + intro line above the reason, the "Recorded by" line below it.
+  return Math.max(SIGNATURE_BOX_H, BOX_PAD + 40 + reasonH + 8 + 26);
+}
+
+function drawSignatureBox(doc: Doc, data: InspectionPdfData, box: Box, sig: PdfSignature): void {
+  const { x, top, w, h } = box;
+  doc.rect(x, top, w, h).lineWidth(0.75).strokeColor(LINE).stroke();
+  doc.font("Helvetica-Bold").fontSize(9).fillColor(INK)
+    .text(`${sig.role === "resident" ? "Resident" : "RA"} — ${sig.signerName}`, x + BOX_PAD, top + BOX_PAD, { width: w - BOX_PAD * 2 });
+  doc.font("Helvetica-Oblique").fontSize(8).fillColor(MUTED)
+    .text(`“${ATTESTATIONS[data.type][sig.role]}”`, x + BOX_PAD, top + BOX_PAD + 13, { width: w - BOX_PAD * 2 });
+  if (sig.png) {
+    try {
+      doc.image(sig.png, x + BOX_PAD, top + 44, { fit: [w - BOX_PAD * 2, 70] });
+    } catch {
+      doc.font("Helvetica-Oblique").fontSize(9).fillColor(MUTED)
+        .text("[Signature image could not be embedded.]", x + BOX_PAD, top + 70, { width: w - BOX_PAD * 2 });
+    }
+  } else {
+    doc.font("Helvetica-Oblique").fontSize(9).fillColor(MUTED)
+      .text("[Signature image could not be retrieved.]", x + BOX_PAD, top + 70, { width: w - BOX_PAD * 2 });
+  }
+  doc.font("Helvetica").fontSize(8).fillColor(MUTED)
+    .text(`Signed ${stamp(sig.signedAt)}`, x + BOX_PAD, top + h - 18, { width: w - BOX_PAD * 2 });
+}
+
+function drawWaiverBox(doc: Doc, box: Box, waiver: PdfWaiver): void {
+  const { x, top, w, h } = box;
+  doc.rect(x, top, w, h).lineWidth(0.75).strokeColor(LINE).stroke();
+  doc.font("Helvetica-Bold").fontSize(9).fillColor(ALERT)
+    .text("Resident did not sign", x + BOX_PAD, top + BOX_PAD, { width: w - BOX_PAD * 2 });
+  doc.font("Helvetica").fontSize(9).fillColor(INK)
+    .text("Recorded as unavailable / declined to sign. Reason:", x + BOX_PAD, top + BOX_PAD + 14, { width: w - BOX_PAD * 2 });
+  doc.font("Helvetica-Oblique").fontSize(9.5).fillColor(INK)
+    .text(`“${waiver.reason}”`, x + BOX_PAD, top + BOX_PAD + 40, { width: w - BOX_PAD * 2 });
+  doc.font("Helvetica").fontSize(8).fillColor(MUTED)
+    .text(`Recorded by ${waiver.recordedBy}, ${stamp(waiver.recordedAt)}`, x + BOX_PAD, top + h - 26, { width: w - BOX_PAD * 2 });
+}
+
+/**
+ * The attestation boxes. Resident half on the left, RA on the right; the
+ * resident half is the signature when there is one, else the waiver. When
+ * BOTH exist (a resident who signed after the RA had already recorded them
+ * as unavailable) the waiver is still part of the record and prints below,
+ * full width — the document never quietly drops something that was recorded.
+ */
+function drawSignatures(
+  doc: Doc,
+  data: InspectionPdfData,
+  ensureRoom: (needed: number) => void,
+): void {
+  const halfW = (CONTENT_W - 16) / 2;
+  const resident = data.signatures.find((s) => s.role === "resident");
+  const ra = data.signatures.find((s) => s.role === "ra");
+  const waiverBeside = !resident && data.waiver ? data.waiver : null;
+  const waiverBelow = resident && data.waiver ? data.waiver : null;
+
+  const row1H = waiverBeside
+    ? waiverBoxHeight(doc, waiverBeside, halfW)
+    : SIGNATURE_BOX_H;
+  ensureRoom(40 + row1H);
   doc.moveDown(0.8);
   doc.font("Helvetica-Bold").fontSize(12).fillColor(NAVY).text("Signatures", MARGIN, doc.y);
   doc.moveDown(0.3);
-  const boxTop = doc.y;
-  const boxW = (CONTENT_W - 16) / 2;
-  const boxH = 150;
 
-  const attestation = (role: "resident" | "ra") =>
-    role === "resident"
-      ? data.type === "move_in"
-        ? "“I agree the recorded conditions are accurate.”"
-        : "“I agree the recorded move-out conditions are accurate.”"
-      : data.type === "move_in"
-        ? "“I confirm I conducted this inspection.”"
-        : "“I confirm I conducted this move-out inspection.”";
-
-  const drawSignatureBox = (x: number, sig: PdfSignature) => {
-    doc.rect(x, boxTop, boxW, boxH).lineWidth(0.75).strokeColor(LINE).stroke();
-    const pad = 10;
-    doc.font("Helvetica-Bold").fontSize(9).fillColor(INK)
-      .text(`${sig.role === "resident" ? "Resident" : "RA"} — ${sig.signerName}`, x + pad, boxTop + pad, { width: boxW - pad * 2 });
-    doc.font("Helvetica-Oblique").fontSize(8).fillColor(MUTED)
-      .text(attestation(sig.role), x + pad, boxTop + pad + 13, { width: boxW - pad * 2 });
-    if (sig.png) {
-      try {
-        doc.image(sig.png, x + pad, boxTop + 44, { fit: [boxW - pad * 2, 70] });
-      } catch {
-        doc.font("Helvetica-Oblique").fontSize(9).fillColor(MUTED)
-          .text("[Signature image could not be embedded.]", x + pad, boxTop + 70, { width: boxW - pad * 2 });
-      }
-    } else {
-      doc.font("Helvetica-Oblique").fontSize(9).fillColor(MUTED)
-        .text("[Signature image could not be retrieved.]", x + pad, boxTop + 70, { width: boxW - pad * 2 });
-    }
-    doc.font("Helvetica").fontSize(8).fillColor(MUTED)
-      .text(`Signed ${stamp(sig.signedAt)}`, x + pad, boxTop + boxH - 18, { width: boxW - pad * 2 });
-  };
-
-  const drawWaiverBox = (x: number) => {
-    const w = data.waiver!;
-    doc.rect(x, boxTop, boxW, boxH).lineWidth(0.75).strokeColor(LINE).stroke();
-    const pad = 10;
-    doc.font("Helvetica-Bold").fontSize(9).fillColor("#8a1f11")
-      .text("Resident did not sign", x + pad, boxTop + pad, { width: boxW - pad * 2 });
-    doc.font("Helvetica").fontSize(9).fillColor(INK)
-      .text("Recorded as unavailable / declined to sign. Reason:", x + pad, boxTop + pad + 14, { width: boxW - pad * 2 });
-    doc.font("Helvetica-Oblique").fontSize(9.5).fillColor(INK)
-      .text(`“${w.reason}”`, x + pad, boxTop + pad + 40, { width: boxW - pad * 2 });
-    doc.font("Helvetica").fontSize(8).fillColor(MUTED)
-      .text(`Recorded by ${w.recordedBy}, ${stamp(w.recordedAt)}`, x + pad, boxTop + boxH - 26, { width: boxW - pad * 2 });
-  };
-
-  const resident = data.signatures.find((s) => s.role === "resident");
-  const ra = data.signatures.find((s) => s.role === "ra");
-  if (resident) drawSignatureBox(MARGIN, resident);
-  else if (data.waiver) drawWaiverBox(MARGIN);
-  if (ra) drawSignatureBox(MARGIN + boxW + 16, ra);
-  doc.y = boxTop + boxH + 10;
+  const top = doc.y;
+  const left: Box = { x: MARGIN, top, w: halfW, h: row1H };
+  const right: Box = { x: MARGIN + halfW + 16, top, w: halfW, h: row1H };
+  if (resident) drawSignatureBox(doc, data, left, resident);
+  else if (waiverBeside) drawWaiverBox(doc, left, waiverBeside);
+  if (ra) drawSignatureBox(doc, data, right, ra);
+  doc.y = top + row1H + 10;
   doc.x = MARGIN;
+
+  if (waiverBelow) {
+    const h = waiverBoxHeight(doc, waiverBelow, CONTENT_W);
+    ensureRoom(h + 10);
+    drawWaiverBox(doc, { x: MARGIN, top: doc.y, w: CONTENT_W, h }, waiverBelow);
+    doc.y += h + 10;
+    doc.x = MARGIN;
+  }
 }
 
 /**
@@ -294,7 +336,7 @@ export async function renderInspectionPdf(data: InspectionPdfData): Promise<Buff
 /** Map every page drawn so far to the record it came from. */
 function pageOwners(
   doc: Doc,
-  records: InspectionPdfData[],
+  records: PageOwner[],
   firstPageOf: number[],
 ): PageOwner[] {
   const total = doc.bufferedPageRange().count;
@@ -309,30 +351,44 @@ function pageOwners(
   return owners;
 }
 
+/** Thrown when a packet is asked for and nothing printable arrives. */
+export class EmptyPacketError extends Error {
+  constructor() {
+    super("renderInspectionPacket called with no records");
+    this.name = "EmptyPacketError";
+  }
+}
+
 /**
  * A whole hallway's records in one document, each starting on a fresh page.
  * No second template: this loops over the same drawRecord the single export
  * uses, so a packet's pages are the per-resident pages, concatenated.
+ *
+ * Takes any iterable — an array, or an async generator that loads each
+ * record (images included) only when its turn comes — so a packet never
+ * needs every room's photos in memory at once; once a record is drawn, its
+ * image buffers are free to go.
  */
 export async function renderInspectionPacket(
-  records: InspectionPdfData[],
+  records: Iterable<InspectionPdfData> | AsyncIterable<InspectionPdfData>,
   title: string,
 ): Promise<Buffer> {
-  if (records.length === 0) {
-    throw new Error("renderInspectionPacket called with no records");
-  }
   const { doc, done } = openDocument(title);
 
+  const owners: PageOwner[] = [];
   const firstPageOf: number[] = [];
-  records.forEach((record, i) => {
+  for await (const record of records) {
     // Record 1 opens the document's first page; every later one starts on a
     // new page of its own.
-    if (i > 0) doc.addPage();
+    if (owners.length > 0) doc.addPage();
     firstPageOf.push(doc.bufferedPageRange().count - 1);
     drawRecord(doc, record);
-  });
+    // Keep only what the footer needs, not the record's images.
+    owners.push({ hallwayName: record.hallwayName, roomNumber: record.roomNumber, type: record.type });
+  }
+  if (owners.length === 0) throw new EmptyPacketError();
 
-  stampFooters(doc, pageOwners(doc, records, firstPageOf));
+  stampFooters(doc, pageOwners(doc, owners, firstPageOf));
   doc.end();
   return done;
 }

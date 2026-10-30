@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getStaffContext } from "@/lib/auth";
 import { OpenStayFlow, type PersonOption, type RoomChoice } from "@/components/admin/open-stay-flow";
 import { getCurrentTerm } from "@/lib/current-term";
+import { compareTermsNewestFirst } from "@/lib/terms";
 import type { OccupancyStatus } from "@/lib/types";
 import { Alert } from "@/components/ui/alert";
 import { PageTitle } from "@/components/ui/typography";
@@ -72,7 +73,7 @@ export default async function NewStayPage() {
     phone: p.phone ?? "",
     emergency_contact: p.emergency_contact ?? "",
     stays: [...p.occupancies]
-      .sort((a, b) => b.term.localeCompare(a.term))
+      .sort((a, b) => compareTermsNewestFirst(a.term, b.term))
       .map((o) => ({
         id: o.id,
         term: o.term,

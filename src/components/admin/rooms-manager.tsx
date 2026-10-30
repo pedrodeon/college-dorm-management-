@@ -22,11 +22,17 @@ export function RoomsManager({ hallways }: { hallways: HallwayGroup[] }) {
   const [roomNumber, setRoomNumber] = useState("");
   const [capacity, setCapacity] = useState("2");
 
-  function run(fn: () => Promise<{ ok: boolean; error?: string }>, onOk?: () => void) {
+  // `onError` lets a row keep its own refusal next to its buttons instead of
+  // at the top of an 84-row list.
+  function run(
+    fn: () => Promise<{ ok: boolean; error?: string }>,
+    onOk?: () => void,
+    onError: (message: string) => void = setError,
+  ) {
     setError(null);
     startTransition(async () => {
       const res = await fn();
-      if (!res.ok) setError(res.error ?? "Something went wrong.");
+      if (!res.ok) onError(res.error ?? "Something went wrong.");
       else onOk?.();
     });
   }
@@ -62,6 +68,8 @@ export function RoomsManager({ hallways }: { hallways: HallwayGroup[] }) {
           <input
             type="number"
             min={1}
+            max={8}
+            step={1}
             value={capacity}
             onChange={(e) => setCapacity(e.target.value)}
             className="w-24 rounded-md border border-gray-300 px-3 py-2 text-base"
@@ -85,7 +93,13 @@ export function RoomsManager({ hallways }: { hallways: HallwayGroup[] }) {
           ) : (
             <Card as="ul" variant="list" className="mt-2">
               {h.rooms.map((room) => (
-                <RoomRow key={room.id} room={room} disabled={isPending} run={run} />
+                <RoomRow
+                  key={room.id}
+                  room={room}
+                  hallwayName={h.name}
+                  disabled={isPending}
+                  run={run}
+                />
               ))}
             </Card>
           )}
@@ -97,16 +111,25 @@ export function RoomsManager({ hallways }: { hallways: HallwayGroup[] }) {
 
 function RoomRow({
   room,
+  hallwayName,
   disabled,
   run,
 }: {
   room: AdminRoom;
+  hallwayName: string;
   disabled: boolean;
-  run: (fn: () => Promise<{ ok: boolean; error?: string }>, onOk?: () => void) => void;
+  run: (
+    fn: () => Promise<{ ok: boolean; error?: string }>,
+    onOk?: () => void,
+    onError?: (message: string) => void,
+  ) => void;
 }) {
   const [number, setNumber] = useState(room.room_number);
   const [capacity, setCapacity] = useState(String(room.capacity));
+  const [error, setError] = useState<string | null>(null);
   const dirty = number !== room.room_number || capacity !== String(room.capacity);
+  // Every row has the same two inputs; the label names which room's.
+  const which = `${hallwayName} room ${room.room_number}`;
 
   return (
     <li className="flex flex-wrap items-center gap-2 px-4 py-2.5">
@@ -114,15 +137,17 @@ function RoomRow({
         type="text"
         value={number}
         onChange={(e) => setNumber(e.target.value)}
-        aria-label="Room number"
+        aria-label={`Room number for ${which}`}
         className="w-24 rounded-md border border-gray-300 px-2 py-1.5 text-sm"
       />
       <input
         type="number"
         min={1}
+        max={8}
+        step={1}
         value={capacity}
         onChange={(e) => setCapacity(e.target.value)}
-        aria-label="Capacity"
+        aria-label={`Capacity for ${which}`}
         className="w-20 rounded-md border border-gray-300 px-2 py-1.5 text-sm"
       />
       <span className="text-xs text-gray-500">{room.occupants} in room</span>
@@ -130,7 +155,10 @@ function RoomRow({
         <Button
           variant="outline"
           size="sm"
-          onClick={() => run(() => updateRoom(room.id, number, Number(capacity)))}
+          onClick={() => {
+            setError(null);
+            run(() => updateRoom(room.id, number, Number(capacity)), undefined, setError);
+          }}
           disabled={disabled || !dirty}
         >
           Save
@@ -139,13 +167,21 @@ function RoomRow({
           variant="danger"
           size="sm"
           onClick={() => {
-            if (confirm(`Delete room ${room.room_number}?`)) run(() => deleteRoom(room.id));
+            if (confirm(`Delete ${which}?`)) {
+              setError(null);
+              run(() => deleteRoom(room.id), undefined, setError);
+            }
           }}
           disabled={disabled}
         >
           Delete
         </Button>
       </div>
+      {error && (
+        <Alert tone="error" className="basis-full">
+          {error}
+        </Alert>
+      )}
     </li>
   );
 }

@@ -9,17 +9,21 @@ import {
 } from "@/app/(app)/inspections/[id]/actions";
 import { recordOccupancy } from "@/app/(app)/desk/actions";
 import { occupancySuccessPath } from "@/lib/occupancy-gate";
+import { ATTESTATIONS, WAIVER_REASON_MAX_LENGTH } from "@/lib/attestations";
 import { createClient } from "@/lib/supabase/client";
 import { PHOTO_BUCKET } from "@/lib/photos";
 import type { SignatureRole } from "@/lib/types";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { LocalTime } from "@/components/ui/local-time";
 import { SectionLabel } from "@/components/ui/typography";
 
 export type StoredSignature = {
   role: SignatureRole;
-  url: string; // signed URL
+  /** Signed URL, or null when the image could not be signed for this view.
+      The row still exists — the role is signed either way. */
+  url: string | null;
   signed_at: string;
   /** Who actually signed (from captured_by) — a stored RA signature must be
       labeled with the signer, not whoever happens to be viewing. */
@@ -34,13 +38,12 @@ export type StoredWaiver = {
 
 type Mode = "move_in" | "move_out";
 
-// Attestation wording and finalization per inspection type. The resident is
-// present at move-in by definition, so only move-out offers the waiver.
+// Finalization per inspection type. The resident is present at move-in by
+// definition, so only move-out offers the waiver. The attestation sentences
+// themselves live in lib/attestations.ts, shared with the PDF.
 const MODE_COPY: Record<
   Mode,
   {
-    residentAttestation: string;
-    raAttestation: string;
     finalizeStatus: string; // occupancy_status that can still be finalized
     finalizeLabel: string;
     finalizeType: "check_in" | "check_out";
@@ -49,8 +52,6 @@ const MODE_COPY: Record<
   }
 > = {
   move_in: {
-    residentAttestation: "I agree the recorded conditions are accurate.",
-    raAttestation: "I confirm I conducted this inspection.",
     finalizeStatus: "expected",
     finalizeLabel: "Finalize check-in",
     finalizeType: "check_in",
@@ -58,9 +59,6 @@ const MODE_COPY: Record<
     doneText: "is checked in.",
   },
   move_out: {
-    residentAttestation:
-      "I agree the recorded move-out conditions are accurate.",
-    raAttestation: "I confirm I conducted this move-out inspection.",
     finalizeStatus: "checked_in",
     finalizeLabel: "Finalize check-out",
     finalizeType: "check_out",
@@ -74,14 +72,17 @@ const MODE_COPY: Record<
  * saves independently and permanently; finalization is gated on the RA
  * signature plus the resident half — the resident's signature, or (move-out
  * only) a recorded "unavailable / declined to sign" waiver with its reason.
- * The record_occupancy RPC enforces the same rule server-side.
+ * The record_occupancy RPC enforces the same rule server-side. The RA half
+ * is offered only to the inspector: "I confirm I conducted this inspection"
+ * is nobody else's to sign, and the database refuses anyone else.
  */
 export function InspectionSignatures({
   mode,
   inspectionId,
   occupancyId,
   residentName,
-  staffName,
+  inspectorName,
+  viewerIsInspector,
   hallwayId,
   occupancyStatus,
   stored,
@@ -92,7 +93,9 @@ export function InspectionSignatures({
   /** The stay being finalized — inspections and signatures are per-stay. */
   occupancyId: string;
   residentName: string;
-  staffName: string;
+  /** Who conducted the inspection — the only staff who can sign as the RA. */
+  inspectorName: string;
+  viewerIsInspector: boolean;
   hallwayId: string | null;
   occupancyStatus: string;
   stored: StoredSignature[];
@@ -169,7 +172,7 @@ export function InspectionSignatures({
       <div className="mt-2 grid gap-4 sm:grid-cols-2">
         <SignatureBlock
           title={`Resident signature — ${residentName}`}
-          attestation={copy.residentAttestation}
+          attestation={ATTESTATIONS[mode].resident}
           existing={byRole("resident")}
           waiver={waiver}
           allowWaiver={mode === "move_out" && !byRole("resident") && !waiver}
@@ -178,11 +181,16 @@ export function InspectionSignatures({
           onWaive={waive}
         />
         <SignatureBlock
-          title={`RA signature — ${byRole("ra")?.signerName ?? staffName}`}
-          attestation={copy.raAttestation}
+          title={`RA signature — ${byRole("ra")?.signerName ?? inspectorName}`}
+          attestation={ATTESTATIONS[mode].ra}
           existing={byRole("ra")}
           waiver={null}
           allowWaiver={false}
+          lockedReason={
+            viewerIsInspector
+              ? null
+              : `Only ${inspectorName}, who conducted this inspection, can sign as the RA.`
+          }
           disabled={isPending}
           onSave={(pad) => save("ra", pad)}
           onWaive={() => {}}
@@ -221,6 +229,7 @@ function SignatureBlock({
   existing,
   waiver,
   allowWaiver,
+  lockedReason = null,
   disabled,
   onSave,
   onWaive,
@@ -230,6 +239,8 @@ function SignatureBlock({
   existing: StoredSignature | undefined;
   waiver: StoredWaiver | null;
   allowWaiver: boolean;
+  /** When set, the pad is withheld and this sentence says why. */
+  lockedReason?: string | null;
   disabled: boolean;
   onSave: (pad: SignaturePadHandle | null) => void;
   onWaive: (reason: string) => void;
@@ -247,14 +258,20 @@ function SignatureBlock({
       {existing ? (
         <div className="mt-3">
           {/* Stored, immutable; served via a short-lived signed URL. */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={existing.url}
-            alt={`${title} (signed)`}
-            className="h-32 w-full rounded-md border border-gray-200 bg-white object-contain"
-          />
+          {existing.url ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={existing.url}
+              alt={`${title} (signed)`}
+              className="h-32 w-full rounded-md border border-gray-200 bg-white object-contain"
+            />
+          ) : (
+            <div className="flex h-32 w-full items-center justify-center rounded-md border border-dashed border-gray-300 bg-gray-50 text-xs text-gray-500">
+              Signed — image unavailable right now
+            </div>
+          )}
           <p className="mt-1.5 text-xs text-gray-500">
-            Signed {new Date(existing.signed_at).toLocaleString()}
+            Signed <LocalTime iso={existing.signed_at} />
           </p>
         </div>
       ) : waiver ? (
@@ -265,9 +282,13 @@ function SignatureBlock({
           <p className="mt-1 whitespace-pre-wrap">{waiver.reason}</p>
           <p className="mt-1.5 text-xs">
             Recorded by {waiver.waivedByName},{" "}
-            {new Date(waiver.created_at).toLocaleString()}
+            <LocalTime iso={waiver.created_at} />
           </p>
         </div>
+      ) : lockedReason ? (
+        <Alert tone="info" className="mt-3">
+          {lockedReason}
+        </Alert>
       ) : (
         <div className="mt-3">
           <SignaturePad ref={padRef} onDirtyChange={setDirty} disabled={disabled} />
@@ -298,6 +319,7 @@ function SignatureBlock({
                     <textarea
                       value={waiverReason}
                       onChange={(e) => setWaiverReason(e.target.value)}
+                      maxLength={WAIVER_REASON_MAX_LENGTH}
                       rows={2}
                       className="rounded-md border border-gray-300 px-2 py-1.5 text-sm"
                     />

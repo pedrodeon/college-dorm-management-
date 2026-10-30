@@ -12,20 +12,14 @@ import {
   type StoredSignature,
   type StoredWaiver,
 } from "@/components/inspection-signatures";
-import { PHOTO_BUCKET } from "@/lib/photos";
-import type { InspectionType } from "@/lib/types";
+import { signedUrlMap } from "@/lib/photos";
+import { INSPECTION_TYPE_LABEL } from "@/lib/attestations";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { LocalTime } from "@/components/ui/local-time";
 import { PageTitle } from "@/components/ui/typography";
 import { PageHeader } from "@/components/ui/page-header";
 import { staffName } from "@/lib/staff-name";
-
-const TYPE_LABEL: Record<InspectionType, string> = {
-  move_in: "Move-in",
-  move_out: "Move-out",
-  periodic: "Periodic",
-};
 
 /**
  * The read-only record view of one inspection. Strictly a viewer: it loads
@@ -58,29 +52,30 @@ export default async function InspectionPage({
   // Short-lived signed URLs for the private bucket, minted under the caller's
   // RLS — only staff who can SELECT the objects get URLs. Never public URLs.
   // Photos and signature images live in the same bucket.
-  const allPaths = [
+  const signedByPath = await signedUrlMap(supabase, [
     ...items.flatMap((i) => i.inspection_photos.map((p) => p.storage_path)),
     ...inspection.inspection_signatures.map((s) => s.storage_path),
-  ];
-  const signedByPath = new Map<string, string>();
-  if (allPaths.length > 0) {
-    const { data: signed } = await supabase.storage
-      .from(PHOTO_BUCKET)
-      .createSignedUrls(allPaths, 3600);
-    for (const entry of signed ?? []) {
-      if (entry.signedUrl && entry.path) {
-        signedByPath.set(entry.path, entry.signedUrl);
-      }
-    }
-  }
+  ]);
   const room = inspection.rooms;
+
+  // Every stored signature passes through, URL or not: a row that exists but
+  // whose image failed to sign must still read as "signed" — never as an
+  // empty pad that invites a second (and duplicate-refused) signature.
+  const stored: StoredSignature[] = inspection.inspection_signatures.map((s) => ({
+    role: s.role,
+    url: signedByPath.get(s.storage_path) ?? null,
+    signed_at: s.signed_at,
+    // The RA label must name who SIGNED (captured_by), not whoever is viewing
+    // the record.
+    signerName: s.role === "ra" ? staffName(s.captured) : undefined,
+  }));
 
   return (
     <section>
       <PageHeader back={{ href: `/rooms/${room.id}`, label: `Room ${room.room_number}` }} />
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <PageTitle>{TYPE_LABEL[inspection.type]} inspection</PageTitle>
+        <PageTitle>{INSPECTION_TYPE_LABEL[inspection.type]} inspection</PageTitle>
         {signable && !complete && (
           <Badge tone="attention">awaiting signatures</Badge>
         )}
@@ -119,7 +114,9 @@ export default async function InspectionPage({
           <dd>{stay?.term ?? "—"}</dd>
         </div>
         <div className="flex justify-between gap-4">
-          <dt className="text-gray-500">{complete ? "Completed" : "Recorded"}</dt>
+          {/* When the snapshot was taken — the signatures carry their own
+              timestamps below. */}
+          <dt className="text-gray-500">Inspected</dt>
           <dd>
             <LocalTime iso={inspection.timestamp} />
           </dd>
@@ -189,27 +186,13 @@ export default async function InspectionPage({
           inspectionId={inspection.id}
           occupancyId={stay.id}
           residentName={residentName ?? "the resident"}
-          staffName={staff?.name ?? "RA"}
+          inspectorName={staffName(inspection.users)}
+          // "I confirm I conducted this inspection" is only true of the
+          // inspector; the database refuses anyone else's `ra` signature.
+          viewerIsInspector={staff !== null && inspection.inspected_by === staff.id}
           hallwayId={room.hallways?.id ?? null}
           occupancyStatus={stay.occupancy_status}
-          stored={inspection.inspection_signatures.flatMap(
-            (s): StoredSignature[] => {
-              const url = signedByPath.get(s.storage_path);
-              return url
-                ? [
-                    {
-                      role: s.role,
-                      url,
-                      signed_at: s.signed_at,
-                      // The RA label must name who SIGNED (captured_by), not
-                      // whoever is viewing the record.
-                      signerName:
-                        s.role === "ra" ? staffName(s.captured) : undefined,
-                    },
-                  ]
-                : [];
-            },
-          )}
+          stored={stored}
           waiver={
             waiverRow
               ? ({

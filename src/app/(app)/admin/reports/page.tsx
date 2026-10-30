@@ -1,11 +1,10 @@
 import { redirect } from "next/navigation";
 import { getStaffContext } from "@/lib/auth";
+import { addDays, weekStartOf } from "@/lib/chicago-date";
 import {
-  addDays,
   buildRaWeeklyReport,
   currentChicagoWeekStart,
   weekLabel,
-  weekStartOf,
 } from "@/lib/ra-report";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -36,9 +35,12 @@ export default async function AdminReportsPage({
     week && /^\d{4}-\d{2}-\d{2}$/.test(week) ? weekStartOf(week) : thisWeek;
 
   const report = await buildRaWeeklyReport(weekStart);
+  const isCurrentWeek = report.weekStart === thisWeek;
   // Weeks that haven't happened yet can only report zeros, so the walk stops
-  // at the current one.
-  const isCurrentWeek = report.weekStart >= thisWeek;
+  // at the current one — but a hand-typed future ?week= still renders, and
+  // says what it is rather than calling itself "this week".
+  const isFutureWeek = report.weekStart > thisWeek;
+  const atOrPastCurrent = isCurrentWeek || isFutureWeek;
 
   return (
     <section>
@@ -54,7 +56,7 @@ export default async function AdminReportsPage({
         <div className="flex flex-wrap items-center justify-between gap-3 px-1">
           <SectionLabel>
             Week of {weekLabel(report)}
-            {isCurrentWeek ? " (this week)" : ""}
+            {isCurrentWeek ? " (this week)" : isFutureWeek ? " (upcoming)" : ""}
           </SectionLabel>
           <div className="flex flex-wrap gap-2">
             <LinkButton
@@ -64,7 +66,7 @@ export default async function AdminReportsPage({
             >
               ‹ Prev
             </LinkButton>
-            {isCurrentWeek ? (
+            {atOrPastCurrent ? (
               <span
                 className="rounded-full border border-line px-3.5 py-1.5 text-xs font-medium text-faint"
                 aria-disabled="true"
@@ -105,7 +107,7 @@ export default async function AdminReportsPage({
           ) : (
             report.rows.map((row) => (
               <div
-                key={row.name}
+                key={row.id}
                 className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-4 py-2.5"
               >
                 <span className="flex flex-wrap items-center gap-2">
@@ -126,6 +128,12 @@ export default async function AdminReportsPage({
                   </span>
                   <span className="w-14 text-right sm:w-24">
                     {row.deskShifts}
+                    {/* Held but not yet started — a plan, not work done. */}
+                    {row.deskShiftsScheduled > 0 && (
+                      <span className="block text-[11px] font-normal leading-tight text-faint">
+                        +{row.deskShiftsScheduled} scheduled
+                      </span>
+                    )}
                   </span>
                 </span>
               </div>

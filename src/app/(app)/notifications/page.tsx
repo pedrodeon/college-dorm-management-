@@ -16,7 +16,7 @@ export default async function NotificationsPage() {
       .from("notifications")
       .select(
         `id, type, shift_date, slot, target_id, created_at,
-         actor:actor ( name ),
+         actor:actor ( id, name ),
          other:other_user ( name )`,
       )
       .order("created_at", { ascending: false })
@@ -37,14 +37,16 @@ export default async function NotificationsPage() {
 
       <PageTitle>Notifications</PageTitle>
       <p className="mt-1 text-sm text-white/60">
-        Front-desk schedule changes — who claimed, released, or covered which
-        shift.
+        {staff?.role === "rd"
+          ? "Front-desk schedule changes, plus every incident report and maintenance request staff file."
+          : "Front-desk schedule changes — who claimed, released, or covered which shift."}
       </p>
 
       <Card variant="sheet" className="mt-6">
         <NotificationList
           rows={rows ?? []}
           seenAt={seen?.seen_at ?? null}
+          meId={staff?.id ?? null}
         />
       </Card>
     </section>

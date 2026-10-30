@@ -13,6 +13,7 @@ import { Card } from "@/components/ui/card";
 import { PageTitle, SectionLabel } from "@/components/ui/typography";
 import { PageHeader } from "@/components/ui/page-header";
 import { staffName } from "@/lib/staff-name";
+import { compareTermsNewestFirst } from "@/lib/terms";
 
 // The route id is an OCCUPANCY id — one stay. Read from the occupancies table
 // rather than the current_residents view: a past or archived stay must stay
@@ -151,13 +152,16 @@ export default async function ResidentPage({
   const person = stay.people;
   const otherStays = person.occupancies
     .filter((o) => o.id !== stay.id)
-    .sort((a, b) => b.term.localeCompare(a.term));
+    .sort((a, b) => compareTermsNewestFirst(a.term, b.term));
 
   // A stay outside the current term, or archived, is read-only history: the
   // occupancy action would be meaningless, and set_presence refuses archived
-  // stays anyway.
+  // stays anyway. An UNREADABLE term is read-only too — without it we can't
+  // tell a live stay from history, and guessing "live" would offer check-in
+  // on every stay on record.
+  const termUnknown = currentTerm === null;
   const isHistoric =
-    stay.is_archived || (currentTerm !== null && stay.term !== currentTerm);
+    stay.is_archived || termUnknown || stay.term !== currentTerm;
 
   const gateResident = {
     id: stay.id,
@@ -209,10 +213,20 @@ export default async function ResidentPage({
 <Card variant="sheet" className="mt-6">
       {isHistoric && (
         <Alert tone="attention" className="mt-3">
-          {stay.is_archived
-            ? "This stay is archived."
-            : `This stay is from ${stay.term}, not the current term.`}{" "}
-          It&rsquo;s kept for history and can&rsquo;t be acted on.
+          {stay.is_archived ? (
+            <>This stay is archived. It&rsquo;s kept for history and can&rsquo;t be acted on.</>
+          ) : termUnknown ? (
+            <>
+              The current term couldn&rsquo;t be read, so this stay is shown
+              read-only. Refresh the page; if it persists, the RD sets the term
+              under Admin → Residents.
+            </>
+          ) : (
+            <>
+              This stay is from {stay.term}, not the current term. It&rsquo;s
+              kept for history and can&rsquo;t be acted on.
+            </>
+          )}
         </Alert>
       )}
 

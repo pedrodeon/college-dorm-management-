@@ -2,7 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { ConditionChip } from "@/components/condition-chip";
-import { PHOTO_BUCKET } from "@/lib/photos";
+import { signedUrlMap } from "@/lib/photos";
+import { INSPECTION_TYPE_LABEL } from "@/lib/attestations";
+import { CHICAGO_TZ } from "@/lib/chicago-date";
 import type { InspectionType, ItemCondition } from "@/lib/types";
 import { PageTitle } from "@/components/ui/typography";
 import { Card } from "@/components/ui/card";
@@ -17,15 +19,10 @@ type SideInspection = {
   inspection_items: {
     item_name: string;
     condition: ItemCondition;
+    note: string | null;
     inventory_items: { id: string; name: string; sort_order: number } | null;
     inspection_photos: { id: string; storage_path: string }[];
   }[];
-};
-
-const TYPE_LABEL: Record<InspectionType, string> = {
-  move_in: "Move-in",
-  move_out: "Move-out",
-  periodic: "Periodic",
 };
 
 // Ordinal severity so we can tell a degradation (got worse) from a repair.
@@ -37,8 +34,69 @@ const SEVERITY: Record<ItemCondition, number> = {
 };
 
 const SELECT = `id, type, timestamp, room_id, rooms ( room_number ),
-   inspection_items ( item_name, condition, inventory_items ( id, name, sort_order ),
+   inspection_items ( item_name, condition, note, inventory_items ( id, name, sort_order ),
                       inspection_photos ( id, storage_path ) )`;
+
+/** Server-rendered, so the building's clock — never the server's. */
+function dateOf(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-US", {
+    timeZone: CHICAGO_TZ,
+    dateStyle: "medium",
+  });
+}
+
+type Side = { condition: ItemCondition; note: string | null; photos: string[] };
+
+/** One side of a row: the chip, the item note, and photo thumbnails. */
+function Cell({
+  side,
+  label,
+  signedByPath,
+}: {
+  side: Side | undefined;
+  label: string;
+  signedByPath: Map<string, string>;
+}) {
+  if (!side) return <>—</>;
+  return (
+    <>
+      <ConditionChip condition={side.condition} />
+      {side.note && <p className="mt-1 text-xs text-gray-500">{side.note}</p>}
+      {side.photos.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {side.photos.map((path) => {
+            const url = signedByPath.get(path);
+            if (!url) return null;
+            return (
+              <a key={path} href={url} target="_blank" rel="noreferrer" title="Open full size">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={url}
+                  alt={`${label} photo`}
+                  className="h-14 w-14 rounded border border-gray-200 object-cover"
+                />
+              </a>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** A column header naming the snapshot and linking to its record. */
+function Heading({ insp, when }: { insp: SideInspection; when: string }) {
+  return (
+    <th className="px-3 py-2">
+      <Link href={`/inspections/${insp.id}`} className="hover:text-navy hover:underline">
+        {when} · {INSPECTION_TYPE_LABEL[insp.type]}
+        <span className="block font-normal normal-case text-gray-400">
+          {dateOf(insp.timestamp)}
+        </span>
+      </Link>
+    </th>
+  );
+}
 
 export default async function ComparePage({
   params,
@@ -52,92 +110,69 @@ export default async function ComparePage({
   if (!a || !b) notFound();
 
   const supabase = await createClient();
-  const [{ data: left }, { data: right }] = await Promise.all([
+  const [{ data: first }, { data: second }] = await Promise.all([
     supabase.from("inspections").select(SELECT).eq("id", a).single().overrideTypes<SideInspection>(),
     supabase.from("inspections").select(SELECT).eq("id", b).single().overrideTypes<SideInspection>(),
   ]);
 
   // Both must exist and belong to this room (no cross-room compares via URL).
   if (
-    !left ||
-    !right ||
-    left.room_id !== roomId ||
-    right.room_id !== roomId
+    !first ||
+    !second ||
+    first.room_id !== roomId ||
+    second.room_id !== roomId
   ) {
     notFound();
   }
 
-  // Union of items by sort_order (template could have changed between snapshots).
+  // Time decides the sides, not the picker: "got worse" must mean the LATER
+  // snapshot is worse, whichever order the two were chosen in.
+  const [before, after] = [first, second].sort(
+    (x, y) => new Date(x.timestamp).getTime() - new Date(y.timestamp).getTime(),
+  );
+
+  // Union of items by inventory id (the template could have changed between
+  // snapshots), in template order.
   type Row = {
+    id: string;
     name: string;
     sort_order: number;
-    left?: ItemCondition;
-    right?: ItemCondition;
-    leftPhotos: string[]; // storage paths
-    rightPhotos: string[];
+    before?: Side;
+    after?: Side;
   };
   const byId = new Map<string, Row>();
   for (const [side, insp] of [
-    ["left", left],
-    ["right", right],
+    ["before", before],
+    ["after", after],
   ] as const) {
     for (const item of insp.inspection_items) {
       const inv = item.inventory_items;
       if (!inv) continue;
       const entry = byId.get(inv.id) ?? {
+        id: inv.id,
         // The snapshot's own name, not the template's current one.
         name: item.item_name,
         sort_order: inv.sort_order,
-        leftPhotos: [],
-        rightPhotos: [],
       };
-      entry[side] = item.condition;
-      entry[side === "left" ? "leftPhotos" : "rightPhotos"] =
-        item.inspection_photos.map((p) => p.storage_path);
+      entry[side] = {
+        condition: item.condition,
+        note: item.note,
+        photos: item.inspection_photos.map((p) => p.storage_path),
+      };
       byId.set(inv.id, entry);
     }
   }
   const rows = [...byId.values()].sort((x, y) => x.sort_order - y.sort_order);
 
   // Signed URLs for both sides' photos (private bucket, caller's RLS).
-  const allPaths = rows.flatMap((r) => [...r.leftPhotos, ...r.rightPhotos]);
-  const signedByPath = new Map<string, string>();
-  if (allPaths.length > 0) {
-    const { data: signed } = await supabase.storage
-      .from(PHOTO_BUCKET)
-      .createSignedUrls(allPaths, 3600);
-    for (const entry of signed ?? []) {
-      if (entry.signedUrl && entry.path) {
-        signedByPath.set(entry.path, entry.signedUrl);
-      }
-    }
-  }
-
-  function Thumbs({ paths, label }: { paths: string[]; label: string }) {
-    if (paths.length === 0) return null;
-    return (
-      <div className="mt-1.5 flex flex-wrap gap-1.5">
-        {paths.map((path) => {
-          const url = signedByPath.get(path);
-          if (!url) return null;
-          return (
-            <a key={path} href={url} target="_blank" rel="noreferrer" title="Open full size">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={url}
-                alt={`${label} photo`}
-                className="h-14 w-14 rounded border border-gray-200 object-cover"
-              />
-            </a>
-          );
-        })}
-      </div>
-    );
-  }
+  const signedByPath = await signedUrlMap(
+    supabase,
+    rows.flatMap((r) => [...(r.before?.photos ?? []), ...(r.after?.photos ?? [])]),
+  );
 
   return (
     <section>
-      <PageHeader back={{ href: `/rooms/${roomId}`, label: left.rooms ? `Room ${left.rooms.room_number}` : "Room" }} />
+      <PageHeader back={{ href: `/rooms/${roomId}`, label: before.rooms ? `Room ${before.rooms.room_number}` : "Room" }} />
 
       <PageTitle>Compare inspections</PageTitle>
 
@@ -147,52 +182,41 @@ export default async function ComparePage({
           <thead>
             <tr className="text-left text-xs uppercase tracking-wide text-gray-500">
               <th className="px-3 py-2">Item</th>
-              <th className="px-3 py-2">
-                <Link href={`/inspections/${left.id}`} className="hover:text-navy hover:underline">
-                  {TYPE_LABEL[left.type]}
-                  <span className="block font-normal normal-case text-gray-400">
-                    {new Date(left.timestamp).toLocaleDateString()}
-                  </span>
-                </Link>
-              </th>
-              <th className="px-3 py-2">
-                <Link href={`/inspections/${right.id}`} className="hover:text-navy hover:underline">
-                  {TYPE_LABEL[right.type]}
-                  <span className="block font-normal normal-case text-gray-400">
-                    {new Date(right.timestamp).toLocaleDateString()}
-                  </span>
-                </Link>
-              </th>
+              <Heading insp={before} when="Before" />
+              <Heading insp={after} when="After" />
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => {
-              const differs = row.left !== row.right;
-              // Highlight in orange when the second snapshot is worse — the
-              // damage that appeared between the two inspections.
-              const degraded =
-                row.left !== undefined &&
-                row.right !== undefined &&
-                SEVERITY[row.right] > SEVERITY[row.left];
+              const differs = row.before?.condition !== row.after?.condition;
+              const worse =
+                row.before !== undefined &&
+                row.after !== undefined &&
+                SEVERITY[row.after.condition] > SEVERITY[row.before.condition];
+              // Orange is for damage: an item that is now damaged or missing.
+              // Good→fair is worth a glance, not the accent.
+              const damage =
+                worse &&
+                (row.after!.condition === "damaged" || row.after!.condition === "missing");
               return (
                 <tr
-                  key={row.name}
+                  key={row.id}
                   className={`border-t border-gray-100 ${
-                    degraded
+                    damage
                       ? "border-l-4 border-l-accent bg-accent-soft"
-                      : differs
-                        ? "bg-gray-50"
-                        : ""
+                      : worse
+                        ? "border-l-4 border-l-gray-400 bg-gray-50 font-medium"
+                        : differs
+                          ? "bg-gray-50"
+                          : ""
                   }`}
                 >
                   <td className="px-3 py-2 font-medium">{row.name}</td>
                   <td className="px-3 py-2 align-top">
-                    {row.left ? <ConditionChip condition={row.left} /> : "—"}
-                    <Thumbs paths={row.leftPhotos} label={row.name} />
+                    <Cell side={row.before} label={row.name} signedByPath={signedByPath} />
                   </td>
                   <td className="px-3 py-2 align-top">
-                    {row.right ? <ConditionChip condition={row.right} /> : "—"}
-                    <Thumbs paths={row.rightPhotos} label={row.name} />
+                    <Cell side={row.after} label={row.name} signedByPath={signedByPath} />
                   </td>
                 </tr>
               );
@@ -202,8 +226,9 @@ export default async function ComparePage({
       </div>
 
       <p className="mt-4 text-xs text-gray-400">
-        Rows highlighted orange got worse between the two snapshots — the damage
-        to attribute.
+        Earlier snapshot on the left. Rows highlighted orange ended up damaged
+        or missing — the damage to attribute; a grey bar marks an item that
+        slipped from good to fair.
       </p>
       </Card>
     </section>

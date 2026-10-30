@@ -7,16 +7,13 @@ import { PageHeader } from "@/components/ui/page-header";
 import { PageTitle } from "@/components/ui/typography";
 import { ResidentSearch } from "@/components/resident-search";
 import type { Hallway } from "@/lib/types";
+import { hallwayAbbrev } from "@/lib/hallway-label";
 
 export const metadata = { title: "Roster — Tudor Hall" };
 
 type HallwayRow = Hallway & {
   hallway_assignments: { users: { name: string } | null }[];
 };
-
-function abbrev(h: Hallway) {
-  return `${h.wing[0].toUpperCase()}${h.floor}${h.section ?? ""}`;
-}
 
 /**
  * The Roster tab. An RA lands straight on their own hallway's roster (first
@@ -73,7 +70,7 @@ export default async function RosterPage() {
             return (
               <li key={hallway.id}>
                 <CardLink variant="row" href={`/hallways/${hallway.id}`}>
-                  <SquareBadge>{abbrev(hallway)}</SquareBadge>
+                  <SquareBadge>{hallwayAbbrev(hallway)}</SquareBadge>
                   <div className="min-w-0">
                     <p className="font-bold text-ink">{hallway.name}</p>
                     <p className="mt-0.5 truncate text-sm text-gray-500">

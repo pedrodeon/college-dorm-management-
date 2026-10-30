@@ -3,29 +3,18 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { StatusChip } from "@/components/ui/status-chip";
-import { openStay } from "@/app/(app)/admin/residents/actions";
-import type { OccupancyStatus } from "@/lib/types";
+import {
+  openStay,
+  type PersonOption,
+  type PersonStay,
+} from "@/app/(app)/admin/residents/actions";
+import { matchesResident } from "@/lib/resident-search";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SearchInput } from "@/components/ui/search-input";
 
-export type PersonStay = {
-  id: string;
-  term: string;
-  occupancy_status: OccupancyStatus;
-  is_archived: boolean;
-  room_label: string;
-};
-
-export type PersonOption = {
-  id: string;
-  full_name: string;
-  student_id: string;
-  phone: string;
-  emergency_contact: string;
-  stays: PersonStay[];
-};
+export type { PersonOption, PersonStay };
 
 export type RoomChoice = {
   id: string;
@@ -63,14 +52,10 @@ export function OpenStayFlow({
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  const q = query.trim().toLowerCase();
-  const matches = q
-    ? people.filter(
-        (p) =>
-          p.full_name.toLowerCase().includes(q) ||
-          p.student_id.toLowerCase().includes(q),
-      )
-    : people;
+  // Same matcher as every other resident search (name partial, student-ID
+  // prefix, accents folded).
+  const q = query.trim();
+  const matches = q ? people.filter((p) => matchesResident(p, q)) : people;
 
   function pickExisting(person: PersonOption) {
     setError(null);
@@ -115,10 +100,11 @@ export function OpenStayFlow({
             }
             setError(result.error);
             // A student ID collision isn't a dead end — switch to the person we
-            // already have, keeping the RD in the flow.
+            // already have, keeping the RD in the flow. The action returns the
+            // whole record, so this works even for someone added after this
+            // page loaded.
             if ("duplicateOf" in result) {
-              const existing = people.find((p) => p.id === result.duplicateOf.person_id);
-              if (existing) setSubject({ kind: "existing", person: existing });
+              setSubject({ kind: "existing", person: result.duplicateOf });
             }
           });
         }}
@@ -204,7 +190,7 @@ export function OpenStayFlow({
 function StayLines({ stays }: { stays: PersonStay[] }) {
   if (stays.length === 0) {
     return (
-      <p className="mt-1 text-xs text-gray-400">On record, but no stays yet.</p>
+      <p className="mt-1 text-xs text-gray-600">On record, but no stays yet.</p>
     );
   }
   return (
@@ -218,7 +204,7 @@ function StayLines({ stays }: { stays: PersonStay[] }) {
             isPresent={stay.occupancy_status === "checked_in"}
           />
           {stay.is_archived && (
-            <span className="rounded bg-gray-100 px-1.5 py-0.5 font-medium text-gray-500">
+            <span className="rounded bg-gray-100 px-1.5 py-0.5 font-medium text-gray-600">
               archived
             </span>
           )}
@@ -269,6 +255,12 @@ function StayForm({
   }
 
   const termIsCurrent = values.term.trim() === currentTerm;
+  const chosenRoom = rooms.find((r) => r.id === values.room_id) ?? null;
+  // Capacity is a warning, not a wall: the RD sometimes has to triple a room
+  // for a week. Both counts are current-term, so a next-term stay in a room
+  // that is full today is a false alarm — say so rather than nag.
+  const roomFull =
+    chosenRoom !== null && termIsCurrent && chosenRoom.occupants >= chosenRoom.capacity;
   const priorStays = existing?.stays.filter((s) => !s.is_archived) ?? [];
   const completedPriors = priorStays.filter(
     (s) => s.occupancy_status === "checked_out",
@@ -346,6 +338,12 @@ function StayForm({
                 </option>
               ))}
             </select>
+            {roomFull && (
+              <span className="text-xs font-normal text-gray-600">
+                Already full ({chosenRoom.occupants}/{chosenRoom.capacity}).
+                You&rsquo;ll be asked to confirm.
+              </span>
+            )}
           </label>
 
           <label className="flex flex-col gap-1 text-sm">
@@ -379,7 +377,20 @@ function StayForm({
         </p>
 
         <div className="mt-4 flex gap-2">
-          <Button onClick={() => onSubmit(values)} disabled={isPending || !canSubmit}>
+          <Button
+            onClick={() => {
+              if (
+                roomFull &&
+                !confirm(
+                  `${chosenRoom.label} is already full (${chosenRoom.occupants}/${chosenRoom.capacity}). Open the stay there anyway?`,
+                )
+              ) {
+                return;
+              }
+              onSubmit(values);
+            }}
+            disabled={isPending || !canSubmit}
+          >
             {isPending ? "Opening stay…" : "Open stay"}
           </Button>
           <Button variant="subtle" onClick={onBack} disabled={isPending}>

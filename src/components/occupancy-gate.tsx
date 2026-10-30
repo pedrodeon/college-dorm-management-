@@ -59,13 +59,25 @@ export function OccupancyGate({
   progress,
   variant,
   onOptimistic,
+  onError,
 }: {
   resident: GateResident;
   flow: OccupancyFlow;
   progress: GateProgress | null;
   variant: "inline" | "primary";
-  /** Lets a parent apply an optimistic status change in the same transition. */
+  /**
+   * Lets a parent apply an optimistic status change in the same transition.
+   * Called only once the event is recorded: flipping earlier would drop the
+   * row out of a filtered list and unmount this control before a refusal
+   * could be shown.
+   */
   onOptimistic?: (occupancyId: string, status: OccupancyStatus) => void;
+  /**
+   * Where a refusal goes when the parent owns the list. `null` clears it. A
+   * parent that supplies this must render the message itself; the inline
+   * variant only shows errors locally when it is absent.
+   */
+  onError?: (occupancyId: string, message: string | null) => void;
 }) {
   const router = useRouter();
   const copy = FLOW[flow];
@@ -76,19 +88,30 @@ export function OccupancyGate({
   const inspectionHref = `/rooms/${resident.room_id}/inspections/new?type=${flow}&resident=${resident.id}`;
   const reviewHref = progress ? `/inspections/${progress.inspectionId}` : null;
 
+  function report(message: string | null) {
+    setError(message);
+    onError?.(resident.id, message);
+  }
+
   function finalize() {
-    setError(null);
+    report(null);
     startTransition(async () => {
-      onOptimistic?.(resident.id, copy.nextStatus);
       const result = await recordOccupancy(
         resident.id,
         copy.event,
         resident.hallway_id,
       );
-      if (!result.ok) setError(result.error);
-      // Every finalized event gets its confirmation screen; the route
-      // re-verifies the status server-side, so a race just bounces back.
-      else router.push(occupancySuccessPath(resident.id, copy.event));
+      if (!result.ok) {
+        report(result.error);
+        return;
+      }
+      // After an await, updates need their own transition to stay one.
+      startTransition(() => {
+        onOptimistic?.(resident.id, copy.nextStatus);
+        // Every finalized event gets its confirmation screen; the route
+        // re-verifies the status server-side, so a race just bounces back.
+        router.push(occupancySuccessPath(resident.id, copy.event));
+      });
     });
   }
 
@@ -109,9 +132,16 @@ export function OccupancyGate({
       );
     }
     return (
-      <Button size="sm" onClick={finalize} disabled={isPending}>
-        {copy.inlineDone}
-      </Button>
+      <>
+        <Button size="sm" onClick={finalize} disabled={isPending}>
+          {isPending ? "Recording…" : copy.inlineDone}
+        </Button>
+        {error && !onError && (
+          <span role="alert" className="basis-full text-xs text-red-800">
+            {error}
+          </span>
+        )}
+      </>
     );
   }
 

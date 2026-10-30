@@ -2,9 +2,31 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
+import { requireRd } from "@/lib/auth";
 import { humanDbError } from "@/lib/db-errors";
+import { compareTermsNewestFirst } from "@/lib/terms";
+import type { OccupancyStatus } from "@/lib/types";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
+
+/** One of a person's stays, as the new-stay picker lists them. */
+export type PersonStay = {
+  id: string;
+  term: string;
+  occupancy_status: OccupancyStatus;
+  is_archived: boolean;
+  room_label: string;
+};
+
+/** A person as the new-stay picker shows them: record plus every stay. */
+export type PersonOption = {
+  id: string;
+  full_name: string;
+  student_id: string;
+  phone: string;
+  emergency_contact: string;
+  stays: PersonStay[];
+};
 
 export type ResidentInput = {
   full_name: string;
@@ -35,8 +57,10 @@ export type OpenStayResult =
   /**
    * The "new person" path hit a student ID we already have. Not an error the RD
    * should have to re-type their way out of: the UI switches to that person.
+   * The whole record comes back so the switch works even when the person was
+   * added after the page loaded.
    */
-  | { ok: false; duplicateOf: { person_id: string; full_name: string }; error: string }
+  | { ok: false; duplicateOf: PersonOption; error: string }
   | { ok: false; error: string };
 
 function clean(input: ResidentInput) {
@@ -60,8 +84,51 @@ function revalidateRoster() {
   revalidatePath("/"); // dashboard counts
 }
 
-// All writes go through the RLS-scoped client — RLS enforces RD-only. The admin
-// UI guard is defense-in-depth, not the security boundary.
+// All writes go through the RLS-scoped client — RLS enforces RD-only. The
+// requireRd() check at the top of each action is defense-in-depth that also
+// keeps the failure legible: without it an RA's update matches zero rows and
+// reads as success.
+
+type PersonRow = {
+  id: string;
+  full_name: string;
+  student_id: string;
+  phone: string | null;
+  emergency_contact: string | null;
+  occupancies: {
+    id: string;
+    term: string;
+    occupancy_status: OccupancyStatus;
+    is_archived: boolean;
+    rooms: { room_number: string; hallways: { name: string } | null } | null;
+  }[];
+};
+
+const PERSON_SELECT = `id, full_name, student_id, phone, emergency_contact,
+  occupancies ( id, term, occupancy_status, is_archived,
+                rooms ( room_number, hallways ( name ) ) )`;
+
+/** The picker's shape for one person (the same mapping /admin/residents/new
+    builds its list with; kept private so a "use server" file exports only
+    actions). */
+function toPersonOption(p: PersonRow): PersonOption {
+  return {
+    id: p.id,
+    full_name: p.full_name,
+    student_id: p.student_id,
+    phone: p.phone ?? "",
+    emergency_contact: p.emergency_contact ?? "",
+    stays: [...p.occupancies]
+      .sort((a, b) => compareTermsNewestFirst(a.term, b.term))
+      .map((o) => ({
+        id: o.id,
+        term: o.term,
+        occupancy_status: o.occupancy_status,
+        is_archived: o.is_archived,
+        room_label: `${o.rooms?.hallways?.name ?? "?"} · Room ${o.rooms?.room_number ?? "?"}`,
+      })),
+  };
+}
 
 /**
  * Open a new stay — the returning-student flow.
@@ -73,6 +140,9 @@ function revalidateRoster() {
  * everyday screens show only the live roster.
  */
 export async function openStay(input: OpenStayInput): Promise<OpenStayResult> {
+  const rd = await requireRd();
+  if (!rd.ok) return rd;
+
   const term = input.term.trim();
   const phone = input.phone.trim() || null;
   const emergency_contact = input.emergency_contact.trim() || null;
@@ -83,6 +153,10 @@ export async function openStay(input: OpenStayInput): Promise<OpenStayResult> {
   const supabase = await createClient();
   let personId: string;
   let personName: string;
+  // Set when this call created the person, so a failed stay insert can take
+  // the orphan back out: otherwise a retry trips the duplicate guard on a
+  // record the RD never saw succeed.
+  let createdPersonId: string | null = null;
 
   if (input.person.kind === "existing") {
     const { data: person, error } = await supabase
@@ -95,15 +169,8 @@ export async function openStay(input: OpenStayInput): Promise<OpenStayResult> {
     }
     personId = person.id;
     personName = person.full_name;
-
-    // Refresh contact details; nothing about their history is touched.
-    const { error: updateError } = await supabase
-      .from("people")
-      .update({ phone, emergency_contact })
-      .eq("id", personId);
-    if (updateError) {
-      return { ok: false, error: humanDbError(updateError, "Their contact details couldn't be saved.") };
-    }
+    // Contact details are written AFTER the stay opens (below): a refused
+    // stay must leave the record exactly as it was.
   } else {
     const full_name = input.person.full_name.trim();
     const student_id = input.person.student_id.trim();
@@ -116,16 +183,17 @@ export async function openStay(input: OpenStayInput): Promise<OpenStayResult> {
     // second record of them.
     const { data: existing, error: lookupError } = await supabase
       .from("people")
-      .select("id, full_name")
+      .select(PERSON_SELECT)
       .eq("student_id", student_id)
-      .maybeSingle();
+      .maybeSingle()
+      .overrideTypes<PersonRow>();
     if (lookupError) {
       return { ok: false, error: humanDbError(lookupError, "The student-ID check failed. Try again.") };
     }
     if (existing) {
       return {
         ok: false,
-        duplicateOf: { person_id: existing.id, full_name: existing.full_name },
+        duplicateOf: toPersonOption(existing),
         error: `${student_id} is already on record as ${existing.full_name}. Open a new stay for them instead of creating a second record.`,
       };
     }
@@ -147,6 +215,7 @@ export async function openStay(input: OpenStayInput): Promise<OpenStayResult> {
     }
     personId = created.id;
     personName = created.full_name;
+    createdPersonId = created.id;
   }
 
   // A stay that is still expected or checked_in is a live one: opening another
@@ -181,12 +250,33 @@ export async function openStay(input: OpenStayInput): Promise<OpenStayResult> {
     .select("id")
     .single();
   if (occError) {
+    if (createdPersonId) {
+      // Best effort; if this fails too the person shows on the picker with
+      // "no stays yet", which is at least honest.
+      await supabase.from("people").delete().eq("id", createdPersonId);
+    }
     return {
       ok: false,
-      error: occError.message.includes("occupancies_one_active_per_person")
-        ? `${personName} already has an active stay. Check them out or archive it before opening a new one.`
+      error: occError.code === "23503"
+        ? "That room no longer exists — refresh the page and pick again."
         : humanDbError(occError, "The new stay couldn't be opened."),
     };
+  }
+
+  // Now the stay exists, refresh the returning student's contact details.
+  // Nothing about their history is touched.
+  if (input.person.kind === "existing") {
+    const { error: updateError } = await supabase
+      .from("people")
+      .update({ phone, emergency_contact })
+      .eq("id", personId);
+    if (updateError) {
+      revalidateRoster();
+      return {
+        ok: false,
+        error: `The new stay was opened, but ${personName}'s contact details couldn't be saved. Edit them from the Residents list.`,
+      };
+    }
   }
 
   const priorIds = (stays ?? [])
@@ -225,13 +315,16 @@ export async function updateResident(
   personId: string,
   input: ResidentInput,
 ): Promise<ActionResult> {
+  const rd = await requireRd();
+  if (!rd.ok) return rd;
+
   const row = clean(input);
   if (!row.full_name || !row.student_id || !row.room_id) {
     return { ok: false, error: "Name, student ID, and room are required." };
   }
   const supabase = await createClient();
 
-  const { error: personError } = await supabase
+  const { data: personRows, error: personError } = await supabase
     .from("people")
     .update({
       full_name: row.full_name,
@@ -239,9 +332,13 @@ export async function updateResident(
       phone: row.phone,
       emergency_contact: row.emergency_contact,
     })
-    .eq("id", personId);
+    .eq("id", personId)
+    .select("id");
   if (personError) {
     return { ok: false, error: humanDbError(personError, "Their details couldn't be saved.") };
+  }
+  if (!personRows?.length) {
+    return { ok: false, error: "That person is no longer on record — refresh the list." };
   }
 
   // A room change recorded here is a correction for someone who has not
@@ -271,12 +368,16 @@ export async function updateResident(
         error: "This stay is complete and keeps the room it was in.",
       };
     }
-    const { error: occError } = await supabase
+    const { data: moved, error: occError } = await supabase
       .from("occupancies")
       .update({ room_id: row.room_id })
-      .eq("id", occupancyId);
+      .eq("id", occupancyId)
+      .select("id");
     if (occError) {
       return { ok: false, error: humanDbError(occError, "The room change couldn't be saved.") };
+    }
+    if (!moved?.length) {
+      return { ok: false, error: "That stay no longer exists — refresh the list." };
     }
   }
 
@@ -302,6 +403,9 @@ export async function updateResident(
  * name. The UI blocks the button too, but a stale page could still get here.
  */
 export async function deleteOccupancy(occupancyId: string): Promise<ActionResult> {
+  const rd = await requireRd();
+  if (!rd.ok) return rd;
+
   const supabase = await createClient();
 
   const { count, error: countError } = await supabase
@@ -318,11 +422,15 @@ export async function deleteOccupancy(occupancyId: string): Promise<ActionResult
     };
   }
 
-  const { error } = await supabase
+  const { data: deleted, error } = await supabase
     .from("occupancies")
     .delete()
-    .eq("id", occupancyId);
+    .eq("id", occupancyId)
+    .select("id");
   if (error) return { ok: false, error: humanDbError(error) };
+  if (!deleted?.length) {
+    return { ok: false, error: "That stay was already removed — refresh the list." };
+  }
   revalidateRoster();
   return { ok: true };
 }
@@ -336,18 +444,22 @@ export async function setOccupancyArchived(
   occupancyId: string,
   archived: boolean,
 ): Promise<ActionResult> {
+  const rd = await requireRd();
+  if (!rd.ok) return rd;
+
   const supabase = await createClient();
-  const { error } = await supabase
+  const { data: rows, error } = await supabase
     .from("occupancies")
     .update({ is_archived: archived })
-    .eq("id", occupancyId);
+    .eq("id", occupancyId)
+    .select("id");
   if (error) {
-    return {
-      ok: false,
-      error: error.message.includes("occupancies_one_active_per_person")
-        ? "That person already has another active stay — archive or check out that one first."
-        : humanDbError(error, "That stay couldn't be updated."),
-    };
+    // humanDbError knows occupancies_one_active_per_person: unarchiving a
+    // stay for someone who has a live one elsewhere.
+    return { ok: false, error: humanDbError(error, "That stay couldn't be updated.") };
+  }
+  if (!rows?.length) {
+    return { ok: false, error: "That stay no longer exists — refresh the list." };
   }
   revalidateRoster();
   revalidatePath(`/residents/${occupancyId}`);
@@ -359,15 +471,22 @@ export async function setOccupancyArchived(
  * occupancies stop appearing without anything being deleted.
  */
 export async function setCurrentTerm(term: string): Promise<ActionResult> {
+  const rd = await requireRd();
+  if (!rd.ok) return rd;
+
   const trimmed = term.trim();
   if (!trimmed) return { ok: false, error: "The term can't be blank." };
   const supabase = await createClient();
-  const { error } = await supabase
+  const { data: rows, error } = await supabase
     .from("app_settings")
     .update({ current_term: trimmed })
-    .eq("id", true);
+    .eq("id", true)
+    .select("id");
   if (error) {
     return { ok: false, error: humanDbError(error, "The term couldn't be saved.") };
+  }
+  if (!rows?.length) {
+    return { ok: false, error: "The settings row is missing — apply the schema (docs/SETUP.md)." };
   }
   revalidateRoster();
   revalidatePath("/hallways", "layout");

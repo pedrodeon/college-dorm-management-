@@ -650,3 +650,8 @@ notification feed — have since been built; see the data model above.)
 - Write RLS policies alongside any new table or column that touches resident data.
 - Keep functions and components small; favor readability over cleverness.
 - Ask before adding new dependencies or changing the data model.
+- A one-off data cleanup (deleting probe rows, clearing a test artefact) is
+  ad-hoc SQL keyed by id, run once — never a migration. Several early
+  cleanup migrations delete with no filter; they were safe on a fresh
+  database, but re-running them (a `migration repair` and re-push) against
+  real data would wipe real rows.

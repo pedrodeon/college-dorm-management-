@@ -73,8 +73,9 @@ if (missing.length) {
 // ---- import ----------------------------------------------------------------
 const stats = { pessoasCriadas: 0, pessoasExistentes: 0, estadiasCriadas: 0, estadiasExistentes: 0, erros: [] };
 
-for (const r of residents) {
-  const label = r.student_id; // never log names
+for (const [index, r] of residents.entries()) {
+  // Never log names or student IDs: the CSV row number is enough to find it.
+  const label = `linha ${index + 2}`;
 
   // Person: student_id is the identity key. An existing row is reused, so a
   // re-run updates contact details instead of making a second person.

@@ -177,6 +177,78 @@ describe("a packet of one is the individual export", () => {
     assert.ok(text.includes("Resident did not sign"));
     assert.ok(text.includes("Resident left early."));
   });
+
+  test("a waiver recorded before the resident signed after all still prints", async () => {
+    // Both halves exist: the RA recorded the resident as unavailable, then
+    // the resident turned up and signed. Neither may be dropped.
+    const text = textOf(
+      await renderInspectionPacket(
+        [
+          record({
+            type: "move_out",
+            waiver: {
+              reason: "Resident had left for the airport.",
+              recordedBy: "Probe RA",
+              recordedAt: "2026-08-01T15:07:00.000Z",
+            },
+          }),
+        ],
+        "Tudor Hall check-ins",
+      ),
+    ).join(" ");
+    assert.ok(text.includes("Resident did not sign"), "the waiver was dropped");
+    assert.ok(text.includes("Resident had left for the airport."));
+    assert.ok(text.includes("Resident — Sample Suzuki"), "the signature was dropped");
+  });
+
+  test("a long waiver reason renders in full", async () => {
+    const reason = Array.from(
+      { length: 60 },
+      (_, i) => `Sentence ${i + 1} of a very long explanation.`,
+    ).join(" ");
+    const text = textOf(
+      await renderInspectionPdf(
+        record({
+          type: "move_out",
+          signatures: [
+            {
+              role: "ra",
+              signedAt: "2026-08-01T15:06:00.000Z",
+              signerName: "Probe RA",
+              png: null,
+            },
+          ],
+          waiver: {
+            reason,
+            recordedBy: "Probe RA",
+            recordedAt: "2026-08-01T15:07:00.000Z",
+          },
+        }),
+      ),
+    ).join(" ");
+    assert.ok(text.includes("Sentence 60 of a very long explanation."), "the reason was cut off");
+    assert.ok(text.includes("Recorded by Probe RA"), "the attribution line was lost");
+  });
+
+  test("records can arrive one at a time from an async source", async () => {
+    async function* lazily() {
+      yield record({ roomNumber: "101", residentName: "Aaa Resident" });
+      yield record({ roomNumber: "205", residentName: "Bbb Resident" });
+    }
+    const streamed = normalize(textOf(await renderInspectionPacket(lazily(), "packet")));
+    const eager = normalize(
+      textOf(
+        await renderInspectionPacket(
+          [
+            record({ roomNumber: "101", residentName: "Aaa Resident" }),
+            record({ roomNumber: "205", residentName: "Bbb Resident" }),
+          ],
+          "packet",
+        ),
+      ),
+    );
+    assert.deepEqual(streamed, eager);
+  });
 });
 
 describe("many records in one document", () => {
@@ -317,7 +389,7 @@ describe("against a live database", () => {
 
   test("an RA can build the packet for a hallway", async () => {
     const found = await collect(ra, holiday1.id);
-    assert.ok(found, "an RA could not read the hallway");
+    assert.equal(found.kind, "found", "an RA could not read the hallway");
     assert.equal(found.hallwayName, "Holiday 1");
     assert.ok(
       found.inspectionIds.length > 0,

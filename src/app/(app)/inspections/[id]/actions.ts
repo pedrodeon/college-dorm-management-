@@ -3,14 +3,21 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { getStaffContext } from "@/lib/auth";
+import { WAIVER_REASON_MAX_LENGTH } from "@/lib/attestations";
 import type { SignatureRole } from "@/lib/types";
 
 export type SignatureResult = { ok: true } | { ok: false; error: string };
 
+/** Postgres unique_violation — the (inspection, role) key or the one-waiver key. */
+const UNIQUE_VIOLATION = "23505";
+/** Postgres insufficient_privilege — an RLS policy refused the row. */
+const RLS_REFUSED = "42501";
+
 /**
  * Record one attestation signature (image already uploaded to storage) against
- * a move-in inspection. RLS enforces the rest: staff only, captured_by must be
- * the caller, the inspection must be a move-in with a resident, and the
+ * a move-in or move-out inspection. RLS enforces the rest: staff only,
+ * captured_by must be the caller, the inspection must be a move-in/out with a
+ * resident, the `ra` half only by whoever conducted the inspection, and the
  * unique (inspection_id, role) key makes a signature unrepeatable.
  */
 export async function addInspectionSignature(
@@ -38,9 +45,12 @@ export async function addInspectionSignature(
   if (error) {
     return {
       ok: false,
-      error: error.message.includes("duplicate")
-        ? "This signature has already been recorded — signatures are permanent."
-        : error.message,
+      error:
+        error.code === UNIQUE_VIOLATION
+          ? "This signature has already been recorded — signatures are permanent."
+          : role === "ra" && error.code === RLS_REFUSED
+            ? "Only the staff member who conducted this inspection can sign as the RA."
+            : error.message,
     };
   }
 
@@ -64,6 +74,12 @@ export async function waiveResidentSignature(
   if (!trimmed) {
     return { ok: false, error: "A reason is required to record the waiver." };
   }
+  if (trimmed.length > WAIVER_REASON_MAX_LENGTH) {
+    return {
+      ok: false,
+      error: `Keep the reason under ${WAIVER_REASON_MAX_LENGTH} characters (it is ${trimmed.length}).`,
+    };
+  }
 
   const staff = await getStaffContext();
   if (!staff) return { ok: false, error: "Not signed in as staff." };
@@ -78,9 +94,10 @@ export async function waiveResidentSignature(
   if (error) {
     return {
       ok: false,
-      error: error.message.includes("duplicate")
-        ? "A waiver has already been recorded for this inspection."
-        : error.message,
+      error:
+        error.code === UNIQUE_VIOLATION
+          ? "A waiver has already been recorded for this inspection."
+          : error.message,
     };
   }
 

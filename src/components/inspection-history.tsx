@@ -4,6 +4,8 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { InspectionType } from "@/lib/types";
+import { INSPECTION_TYPE_LABEL } from "@/lib/attestations";
+import { CHICAGO_TZ } from "@/lib/chicago-date";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { SectionLabel } from "@/components/ui/typography";
@@ -15,11 +17,18 @@ export type HistoryEntry = {
   inspector: string | null;
 };
 
-const TYPE_LABEL: Record<InspectionType, string> = {
-  move_in: "Move-in",
-  move_out: "Move-out",
-  periodic: "Periodic",
-};
+/** The building's calendar, fixed locale — the same string on the server and
+    in the browser, so the list hydrates without a mismatch. */
+function dateOf(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-US", {
+    timeZone: CHICAGO_TZ,
+    dateStyle: "medium",
+  });
+}
+
+function labelOf(insp: HistoryEntry): string {
+  return `${INSPECTION_TYPE_LABEL[insp.type]} · ${dateOf(insp.timestamp)}`;
+}
 
 export function InspectionHistory({
   roomId,
@@ -29,7 +38,8 @@ export function InspectionHistory({
   inspections: HistoryEntry[];
 }) {
   const router = useRouter();
-  // Default the compare picker to the two most useful snapshots.
+  // Default the compare picker to the two most recent snapshots; the compare
+  // view puts them in time order itself, whichever way round they are picked.
   const [a, setA] = useState(inspections[1]?.id ?? "");
   const [b, setB] = useState(inspections[0]?.id ?? "");
 
@@ -61,10 +71,10 @@ export function InspectionHistory({
                 className="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-gray-50"
               >
                 <span className="text-sm font-medium">
-                  {TYPE_LABEL[insp.type]}
+                  {INSPECTION_TYPE_LABEL[insp.type]}
                 </span>
                 <span className="text-xs text-gray-500">
-                  {new Date(insp.timestamp).toLocaleDateString()}
+                  {dateOf(insp.timestamp)}
                   {insp.inspector ? ` · ${insp.inspector}` : ""}
                 </span>
               </Link>
@@ -84,7 +94,7 @@ export function InspectionHistory({
             >
               {inspections.map((i) => (
                 <option key={i.id} value={i.id}>
-                  {TYPE_LABEL[i.type]} · {new Date(i.timestamp).toLocaleDateString()}
+                  {labelOf(i)}
                 </option>
               ))}
             </select>
@@ -99,7 +109,7 @@ export function InspectionHistory({
             >
               {inspections.map((i) => (
                 <option key={i.id} value={i.id}>
-                  {TYPE_LABEL[i.type]} · {new Date(i.timestamp).toLocaleDateString()}
+                  {labelOf(i)}
                 </option>
               ))}
             </select>
