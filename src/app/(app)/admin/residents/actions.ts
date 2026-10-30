@@ -244,14 +244,40 @@ export async function updateResident(
     return { ok: false, error: humanDbError(personError, "Their details couldn't be saved.") };
   }
 
-  // A room change recorded here is a correction, not a move: mid-term moves go
-  // through reassign_room so they land in room_change_events.
-  const { error: occError } = await supabase
+  // A room change recorded here is a correction for someone who has not
+  // arrived, not a move. Once a stay is checked in, a move is history and goes
+  // through reassign_room so it lands in room_change_events; a completed stay
+  // keeps the room it was in. The database trigger refuses both, so the check
+  // here only turns that refusal into a sentence before the write.
+  const { data: stay, error: stayError } = await supabase
     .from("occupancies")
-    .update({ room_id: row.room_id })
-    .eq("id", occupancyId);
-  if (occError) {
-    return { ok: false, error: humanDbError(occError, "The room change couldn't be saved.") };
+    .select("room_id, occupancy_status")
+    .eq("id", occupancyId)
+    .single();
+  if (stayError || !stay) {
+    return { ok: false, error: humanDbError(stayError, "That stay no longer exists.") };
+  }
+  if (stay.room_id !== row.room_id) {
+    if (stay.occupancy_status === "checked_in") {
+      return {
+        ok: false,
+        error:
+          "They have already checked in, so a room change is a move: use Reassign room on their screen so it is recorded.",
+      };
+    }
+    if (stay.occupancy_status === "checked_out") {
+      return {
+        ok: false,
+        error: "This stay is complete and keeps the room it was in.",
+      };
+    }
+    const { error: occError } = await supabase
+      .from("occupancies")
+      .update({ room_id: row.room_id })
+      .eq("id", occupancyId);
+    if (occError) {
+      return { ok: false, error: humanDbError(occError, "The room change couldn't be saved.") };
+    }
   }
 
   revalidateRoster();

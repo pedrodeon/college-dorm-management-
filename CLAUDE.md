@@ -123,6 +123,12 @@ records, not user accounts. There is no student-facing login.
 - `name` (text)
 - `email` (text, unique) — used for Supabase Auth invite
 - `role` (enum: `rd` | `ra`)
+- `must_change_password` (boolean) — set on accounts created with a
+  temporary password. **While it is true the account is not staff yet:**
+  `is_staff()`/`is_rd()` return false, so RLS and every RPC refuse resident
+  data until the password is changed (the user keeps a self-read on their
+  own row so the app can send them to `/change-password`). The app layout
+  redirect is a convenience on top of that, not the gate.
 
 ### hallway_assignments (metadata: which RA covers which hallway)
 - `id` (uuid, pk)
@@ -189,6 +195,16 @@ It lives in the database, not an env var, so the `current_residents` view and
   `checked_in`
 - `is_archived` (boolean, default false) — hidden, never deleted
 - `created_at`, `updated_at` (timestamptz)
+
+**Writes through the Data API are fenced by a trigger** (`guard_occupancy_writes`):
+for the `authenticated` role, `occupancy_status`, `is_present` and `person_id`
+never change by direct UPDATE, a new row opens only as `expected` (or as a
+past `checked_out` stay), and `room_id` is editable only while the stay is
+still `expected`. Status moves only through `record_occupancy`, presence
+through `set_presence`, rooms after arrival through `reassign_room` — the
+RPCs that write the audit rows. The service role and the definer RPCs are
+not fenced. `record_occupancy` and `set_presence` also refuse archived and
+past-term stays, and `reassign_room` refuses completed ones.
 
 **A returning student is the same `people` row plus a NEW occupancy** — possibly
 a different room. An old occupancy is never reused or reset, because the
@@ -272,6 +288,9 @@ migration.
 - `id` (uuid, pk)
 - `inspection_id` (uuid, fk → inspections)
 - `inventory_item_id` (uuid, fk → inventory_items)
+- `item_name` (text) — the template item's name **as of the inspection**,
+  copied in by `create_inspection`. Renaming a template item later never
+  relabels a signed snapshot; the id stays for ordering and the compare view
 - `condition` (enum: `good` | `fair` | `damaged` | `missing`)
 - `note` (text, nullable)
 
@@ -282,6 +301,12 @@ migration.
 - `storage_path` (text, unique) — PNG in the private inspection-photos bucket
 - `signed_at` (timestamptz, default now())
 - `captured_by` (uuid, fk → users) — RLS pins this to the caller
+
+`storage_path` must start with `signatures/<inspection_id>/<role>-` and name
+an object the caller themself uploaded (`owns_uploaded_object`), so a row
+pointing at nothing, at a photo, or at another inspection's image cannot
+satisfy the gate. `create_inspection` holds photo paths to the same
+ownership rule.
 
 The resident signs "I agree the recorded conditions are accurate"; the RA
 signs "I confirm I conducted this inspection." Applies to `move_in` and
@@ -349,8 +374,11 @@ Recorded from the "Room check" button on room detail.
 - `created_by` (uuid, fk → users) — RLS pins this to the caller
 - `created_at`, `done_by`, `done_at`
 
-Any staff files, reads, and closes/reopens; NO delete policy for any role —
-closed requests are history. Filing notifies the RD through the in-app bell.
+Any staff files one (through the RPC — there is no direct INSERT policy on
+this table or on `incident_reports`, so a row can't exist without its RD
+notification or arrive already `done`); only the RD reads the queue and
+closes/reopens. NO delete policy for any role — closed requests are history.
+Filing notifies the RD through the in-app bell.
 
 ### incident_reports (staff-filed, RD-only — added post-v1)
 - `id` (uuid, pk)
@@ -592,8 +620,9 @@ Build in this order; each step should be usable before starting the next:
 1. Scaffold Next.js + Supabase; auth + login; navy/orange design tokens.
 2. Schema + RLS for users, hallways, hallway_assignments, rooms, and the
    roster (originally one `residents` table; now `people` + `occupancies`).
-   Seed the 8 hallways and the 84 real rooms; staff accounts via
-   `npm run seed:staff`. (Dev originally used a fake fixture roster here;
+   Seed the 8 hallways and the 84 real rooms; real staff accounts via
+   `npm run seed:ras` or Admin → Staff (`npm run seed:staff` is fixture-only
+   and refuses to run elsewhere). (Dev originally used a fake fixture roster here;
    it was retired in migration `20260728215914` — don't re-create it in the
    main database.)
 3. TUDOR HALL dashboard → hallway view → room detail navigation.

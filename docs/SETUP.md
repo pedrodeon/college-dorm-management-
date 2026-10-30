@@ -55,14 +55,11 @@ reference data the app depends on, not dev-only fixtures.
    on an already-seeded database, edits to `seed.sql` must be applied by
    pasting it into the dashboard SQL editor (it's idempotent).
 
-2. **Staff accounts (RD + 2 RAs):**
-
-   ```sh
-   npm run seed:staff
-   ```
-
-   Creates `rd@tudor.test`, `ra1@tudor.test`, `ra2@tudor.test` with the dev
-   password printed at the end (override via `SEED_STAFF_PASSWORD`).
+2. **Staff accounts:** real staff are created with `npm run seed:ras` (from
+   a gitignored roster file, each on a temporary password they must change on
+   first login) or later from Admin → Staff. `npm run seed:staff` is for the
+   **fixture** project only (below) and refuses to run anywhere the fake
+   roster is absent, so a known password can never sit next to real records.
 
 ## 6. Smoke test
 
@@ -96,7 +93,6 @@ main project deliberately has no fixtures** (they were retired in migration
    ```sh
    npx supabase link --project-ref <fixture-ref>
    npx supabase db push --include-seed
-   npm run seed:staff
    ```
 
 3. Load the fake roster — 24 invented people with one active stay each:
@@ -110,7 +106,17 @@ main project deliberately has no fixtures** (they were retired in migration
    exactly 3 checked-in stays in Holiday 1, ≥20 stays, no presence events for
    `S1000104` — aren't met.
 
-4. Point `.env.local` at the fixture project's URL and keys, then `npm test`.
+4. Create the fixture staff accounts the suite signs in with (the script
+   checks for the fake roster first and refuses to run without it):
+
+   ```sh
+   npm run seed:staff
+   ```
+
+   Creates `rd@tudor.test`, `ra1@tudor.test`, `ra2@tudor.test` with the
+   password printed at the end (override via `SEED_STAFF_PASSWORD`).
+
+5. Point `.env.local` at the fixture project's URL and keys, then `npm test`.
    **Relink to the main project afterwards** (`npx supabase link --project-ref
    <main-ref>`), or a later `db push` will land in the wrong place.
 

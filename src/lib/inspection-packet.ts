@@ -15,6 +15,7 @@ import type {
   PdfSignature,
 } from "@/lib/inspection-pdf";
 import { checkedInInRoomOrder } from "@/lib/packet-format";
+import { gateProgress, type GateInspection } from "@/lib/occupancy-gate";
 
 /*
  * Turning stored records into printable ones.
@@ -64,7 +65,7 @@ export async function toPdfData(
   const photos: PdfPhoto[] = await Promise.all(
     items.flatMap((item) =>
       item.inspection_photos.map(async (p) => ({
-        itemName: item.inventory_items?.name ?? "Item",
+        itemName: item.item_name,
         jpeg: await download(p.storage_path),
       })),
     ),
@@ -81,7 +82,7 @@ export async function toPdfData(
     inspectedAt: inspection.timestamp,
     inspectorName: staffName(inspection.users),
     items: items.map((i) => ({
-      name: i.inventory_items?.name ?? "Item",
+      name: i.item_name,
       condition: i.condition,
       note: i.note,
     })),
@@ -127,7 +128,11 @@ export type HallwayCheckins = {
  *
  * A `checked_in` stay whose move-in inspection is somehow unsigned is
  * skipped rather than printed half-formed — record_occupancy makes that
- * impossible going forward, so it would only ever be legacy data.
+ * impossible going forward, so it would only ever be legacy data. A stay
+ * with several move-in inspections (an abandoned first attempt plus the
+ * signed one) contributes the one the gate would pick: fully signed, then
+ * newest. The probe count is therefore exactly the number of records the
+ * packet will contain.
  */
 export async function collectHallwayCheckins(
   supabase: SupabaseClient,
@@ -159,21 +164,28 @@ export async function collectHallwayCheckins(
 
   const { data: inspections } = await supabase
     .from("inspections")
-    .select("id, occupancy_id")
+    .select(
+      `id, occupancy_id, type, timestamp,
+       inspection_signatures ( role ), inspection_signature_waivers ( id )`,
+    )
     .eq("type", "move_in")
     .in(
       "occupancy_id",
       checkedIn.map((c) => c.occupancyId),
     )
-    .overrideTypes<{ id: string; occupancy_id: string }[]>();
+    .overrideTypes<(GateInspection & { occupancy_id: string })[]>();
 
-  const moveInOf = new Map(
-    (inspections ?? []).map((i) => [i.occupancy_id, i.id]),
-  );
+  const byStay = new Map<string, GateInspection[]>();
+  for (const i of inspections ?? []) {
+    const list = byStay.get(i.occupancy_id) ?? [];
+    list.push(i);
+    byStay.set(i.occupancy_id, list);
+  }
 
   const inspectionIds = checkedIn
-    .map((c) => moveInOf.get(c.occupancyId))
-    .filter((id): id is string => id !== undefined);
+    .map((c) => gateProgress(byStay.get(c.occupancyId) ?? [], "move_in"))
+    .filter((p): p is NonNullable<typeof p> => p !== null && p.signatures === 2)
+    .map((p) => p.inspectionId);
 
   return { hallwayName: hallway.name, inspectionIds };
 }

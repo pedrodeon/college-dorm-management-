@@ -173,6 +173,32 @@ export async function restoreOccupancy(studentId, fields) {
   if (error) throw new Error(`Restore failed for ${studentId}: ${error.message}`);
 }
 
+/** A real 1x1 PNG. Signature rows must name an object the caller uploaded. */
+export const TINY_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+/** Where signature images live and the only path shape the RLS accepts. */
+export function signaturePath(inspectionId, role) {
+  return `signatures/${inspectionId}/${role}-${crypto.randomUUID()}.png`;
+}
+
+/**
+ * Upload a signature image as `client` and return its path, ready for an
+ * inspection_signatures row. The policy requires the object to exist under
+ * the inspection's own prefix and to have been uploaded by the signer, so a
+ * made-up path no longer satisfies the gate.
+ */
+export async function uploadSignature(client, inspectionId, role) {
+  const path = signaturePath(inspectionId, role);
+  const { error } = await client.storage
+    .from("inspection-photos")
+    .upload(path, TINY_PNG, { contentType: "image/png" });
+  if (error) throw new Error(`signature upload failed: ${error.message}`);
+  return path;
+}
+
 /** Count rows in an append-only event table for one stay. */
 export async function eventCount(table, occupancyId) {
   const admin = adminClient();

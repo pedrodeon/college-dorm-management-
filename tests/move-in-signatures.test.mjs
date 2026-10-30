@@ -12,6 +12,8 @@ import {
   staffClient,
   assertSeededDevDatabase,
   occupancyByStudentId,
+  signaturePath,
+  uploadSignature,
   RA_EMAIL,
   RD_EMAIL,
 } from "./helpers.mjs";
@@ -19,10 +21,6 @@ import {
 const TESTY = "S1000101";
 
 let admin, anon, ra, raId, rdId, moveInId, periodicId, roomId;
-
-function sigPath(inspectionId, role) {
-  return `signatures/${inspectionId}/${role}-${crypto.randomUUID()}.png`;
-}
 
 before(async () => {
   await assertSeededDevDatabase();
@@ -58,11 +56,32 @@ before(async () => {
 });
 
 describe("capturing signatures", () => {
+  test("a signature must be the signer's own upload under the inspection's path", async () => {
+    // A path that points at nothing.
+    const { error: missing } = await ra.from("inspection_signatures").insert({
+      inspection_id: moveInId,
+      role: "resident",
+      storage_path: signaturePath(moveInId, "resident"),
+      captured_by: raId,
+    });
+    assert.ok(missing, "a signature row pointed at an object that does not exist");
+
+    // A real upload, but under another inspection's prefix.
+    const elsewhere = await uploadSignature(ra, periodicId, "resident");
+    const { error: borrowed } = await ra.from("inspection_signatures").insert({
+      inspection_id: moveInId,
+      role: "resident",
+      storage_path: elsewhere,
+      captured_by: raId,
+    });
+    assert.ok(borrowed, "a signature row borrowed another inspection's image");
+  });
+
   test("staff can record the resident signature against a move-in inspection", async () => {
     const { error } = await ra.from("inspection_signatures").insert({
       inspection_id: moveInId,
       role: "resident",
-      storage_path: sigPath(moveInId, "resident"),
+      storage_path: await uploadSignature(ra, moveInId, "resident"),
       captured_by: raId,
     });
     assert.equal(error, null, error?.message);
@@ -72,7 +91,7 @@ describe("capturing signatures", () => {
     const { error } = await ra.from("inspection_signatures").insert({
       inspection_id: moveInId,
       role: "resident",
-      storage_path: sigPath(moveInId, "resident"),
+      storage_path: await uploadSignature(ra, moveInId, "resident"),
       captured_by: raId,
     });
     assert.ok(error, "a second resident signature was accepted");
@@ -82,7 +101,7 @@ describe("capturing signatures", () => {
     const { error } = await ra.from("inspection_signatures").insert({
       inspection_id: moveInId,
       role: "ra",
-      storage_path: sigPath(moveInId, "ra"),
+      storage_path: await uploadSignature(ra, moveInId, "ra"),
       captured_by: rdId, // someone else
     });
     assert.ok(error, "a signature was recorded as another staff member");
@@ -92,7 +111,7 @@ describe("capturing signatures", () => {
     const { error } = await ra.from("inspection_signatures").insert({
       inspection_id: periodicId,
       role: "resident",
-      storage_path: sigPath(periodicId, "resident"),
+      storage_path: await uploadSignature(ra, periodicId, "resident"),
       captured_by: raId,
     });
     assert.ok(error, "signed a non-move-in inspection");
@@ -102,7 +121,7 @@ describe("capturing signatures", () => {
     const { error } = await anon.from("inspection_signatures").insert({
       inspection_id: moveInId,
       role: "ra",
-      storage_path: sigPath(moveInId, "ra"),
+      storage_path: signaturePath(moveInId, "ra"),
       captured_by: raId,
     });
     assert.ok(error, "anon recorded a signature");

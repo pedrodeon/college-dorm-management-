@@ -1,12 +1,20 @@
-// Seed the dev staff accounts: 1 RD + 2 RAs. FAKE accounts only — .test
+// Seed the FIXTURE staff accounts: 1 RD + 2 RAs with a shared, known
+// password, which the test suite signs in with. FAKE accounts only — .test
 // addresses can never receive real mail.
+//
+// FIXTURE DATABASES ONLY. The script refuses to run unless the fake fixture
+// roster (supabase/seed-fixtures.sql) is already present, the same guard the
+// test suite uses: a known password on an RD account must never exist next
+// to real resident records. Real staff accounts are created with
+// `npm run seed:ras` (temporary password, forced change on first login) or
+// from Admin → Staff.
 //
 // Staff need real auth.users rows (created via the Auth admin API, not SQL),
 // so this runs as a script with the service-role key instead of in seed.sql.
 // Idempotent: safe to re-run; existing users are left in place.
 //
 // Usage:  npm run seed:staff        (reads .env.local via --env-file)
-// Env:    SEED_STAFF_PASSWORD       shared dev password (defaults below)
+// Env:    SEED_STAFF_PASSWORD       shared fixture password (defaults below)
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -39,6 +47,28 @@ const ASSIGNMENTS = {
 const supabase = createClient(url, serviceKey, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
+
+// Same marker tests/helpers.mjs checks before touching anything.
+{
+  const { data: marker, error } = await supabase
+    .from("people")
+    .select("full_name")
+    .eq("student_id", "S1000101")
+    .maybeSingle();
+  if (error) {
+    console.error(`Could not reach the database: ${error.message}`);
+    process.exit(1);
+  }
+  if (marker?.full_name !== "Testy McTestface") {
+    console.error(
+      "Refusing to run: this is not a fixture database (no fake roster found).\n" +
+        "seed:staff creates accounts with a known password, so it only ever runs\n" +
+        "against the fixture project — apply supabase/seed-fixtures.sql there\n" +
+        "first. Real staff accounts come from `npm run seed:ras` or Admin → Staff.",
+    );
+    process.exit(1);
+  }
+}
 
 async function findAuthUserByEmail(email) {
   // listUsers has no email filter param in supabase-js v2; page through.

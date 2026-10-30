@@ -22,6 +22,7 @@ export type GateProgress = {
 export type GateInspection = {
   id: string;
   type: string;
+  timestamp: string;
   inspection_signatures: { role: string }[];
   inspection_signature_waivers: { id: string } | null;
 };
@@ -29,6 +30,12 @@ export type GateInspection = {
 /**
  * The furthest-along inspection of `flow` for one resident, or null if they
  * have none yet.
+ *
+ * A stay can carry more than one inspection of a type (a retry after a
+ * timeout, a second tab), so the choice must not depend on the order rows
+ * happen to come back in: most signatures first, then the NEWEST. The desk
+ * and the resident screen then open the same record, and the hallway packet
+ * prints the same one.
  */
 export function gateProgress(
   inspections: GateInspection[],
@@ -45,9 +52,15 @@ export function gateProgress(
         return {
           inspectionId: i.id,
           signatures: (roles.has("ra") ? 1 : 0) + (residentHalf ? 1 : 0),
+          timestamp: i.timestamp,
         };
       })
-      .sort((a, b) => b.signatures - a.signatures)[0] ?? null
+      .sort(
+        (a, b) =>
+          b.signatures - a.signatures || b.timestamp.localeCompare(a.timestamp),
+      )
+      .map(({ inspectionId, signatures }) => ({ inspectionId, signatures }))[0] ??
+    null
   );
 }
 

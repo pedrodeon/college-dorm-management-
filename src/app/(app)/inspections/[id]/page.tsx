@@ -144,7 +144,7 @@ export default async function InspectionPage({
           >
             <div>
               <span className="text-sm font-medium">
-                {item.inventory_items?.name}
+                {item.item_name}
               </span>
               {item.note && (
                 <span className="ml-2 text-xs text-gray-500">{item.note}</span>
@@ -168,7 +168,7 @@ export default async function InspectionPage({
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={url}
-                        alt={`${item.inventory_items?.name} photo`}
+                        alt={`${item.item_name} photo`}
                         className="h-20 w-20 rounded-md border border-gray-200 object-cover"
                       />
                     </a>

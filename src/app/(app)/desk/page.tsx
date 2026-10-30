@@ -21,6 +21,7 @@ type ResidentRow = {
   inspections: {
     id: string;
     type: string;
+    timestamp: string;
     inspection_signatures: { role: string }[];
     inspection_signature_waivers: { id: string } | null;
   }[];
@@ -35,7 +36,7 @@ export default async function DeskPage() {
     .select(
       `id, full_name, student_id, room_id, occupancy_status,
        rooms ( room_number, hallways ( id, name ) ),
-       inspections ( id, type, inspection_signatures ( role ),
+       inspections ( id, type, timestamp, inspection_signatures ( role ),
                      inspection_signature_waivers ( id ) )`,
     )
     .order("full_name")

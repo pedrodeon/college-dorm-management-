@@ -30,6 +30,11 @@ export async function GET(
   if (!staff) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
+  // Still on the temporary password: not staff yet. RLS already returns
+  // nothing for them; say why instead of 404.
+  if (staff.mustChangePassword) {
+    return NextResponse.json({ error: "password change required" }, { status: 403 });
+  }
 
   const { id } = await params;
   const supabase = await createClient();

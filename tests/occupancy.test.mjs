@@ -16,6 +16,7 @@ import {
   occupancyByStudentId,
   eventCount,
   restoreOccupancy,
+  uploadSignature,
   RA_EMAIL,
 } from "./helpers.mjs";
 
@@ -56,7 +57,7 @@ async function createSignedInspection(client, userId, occupancyId, roomId, type)
     const { error: sigErr } = await client.from("inspection_signatures").insert({
       inspection_id: inspectionId,
       role,
-      storage_path: `signatures/${inspectionId}/${role}-${crypto.randomUUID()}.png`,
+      storage_path: await uploadSignature(client, inspectionId, role),
       captured_by: userId,
     });
     if (sigErr) throw new Error(`setup signature failed: ${sigErr.message}`);
@@ -76,18 +77,27 @@ describe("record_occupancy", () => {
   });
 
   test("check_in is rejected when only one of two signatures exists", async () => {
-    const { data: inspectionId } = await ra.rpc("create_inspection", {
+    // A move-in snapshot needs at least one item (an empty "before" is no
+    // record at all), so give it the first template item.
+    const { data: item } = await admin
+      .from("inventory_items")
+      .select("id")
+      .order("sort_order")
+      .limit(1)
+      .single();
+    const { data: inspectionId, error: createErr } = await ra.rpc("create_inspection", {
       target_room: petit.room_id,
       target_occupancy: petit.id,
       inspection_type: "move_in",
       inspection_notes: "suite: half-signed",
-      items: [],
+      items: [{ item_id: item.id, condition: "good", note: null }],
     });
+    assert.equal(createErr, null, createErr?.message);
     const { data: raUser } = await ra.auth.getUser();
     await ra.from("inspection_signatures").insert({
       inspection_id: inspectionId,
       role: "resident",
-      storage_path: `signatures/${inspectionId}/resident-${crypto.randomUUID()}.png`,
+      storage_path: await uploadSignature(ra, inspectionId, "resident"),
       captured_by: raUser.user.id,
     });
 

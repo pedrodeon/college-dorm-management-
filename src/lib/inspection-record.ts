@@ -43,6 +43,9 @@ export type InspectionRecord = {
   } | null;
   inspection_items: {
     id: string;
+    /** The template item's name AS OF the inspection: renaming the template
+        later never relabels a signed snapshot. */
+    item_name: string;
     condition: "good" | "fair" | "damaged" | "missing";
     note: string | null;
     inventory_items: { name: string; sort_order: number } | null;
@@ -63,7 +66,7 @@ export async function loadInspectionRecord(
        users:inspected_by ( name ),
        inspection_signatures ( role, storage_path, signed_at, captured:captured_by ( name ) ),
        inspection_signature_waivers ( reason, created_at, users:waived_by ( name ) ),
-       inspection_items ( id, condition, note,
+       inspection_items ( id, item_name, condition, note,
                           inventory_items ( name, sort_order ),
                           inspection_photos ( id, storage_path ) )`,
     )
