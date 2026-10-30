@@ -192,9 +192,20 @@ body {
   background: var(--color-canvas);
   opacity: 1;
   transition: opacity 0.4s ease;
+  /* Failsafe: the overlay is in the server HTML, so if the JS bundle never
+     runs nothing else would remove it. Hide it anyway after 8s, well past
+     the longest scripted run (MAX_WAIT_MS + fill/hold/exit in
+     splash-screen.tsx). */
+  animation: th-splash-failsafe 1ms linear 8s forwards;
 }
 html[data-splash="skip"] .th-splash {
   display: none;
+}
+@keyframes th-splash-failsafe {
+  to {
+    visibility: hidden;
+    pointer-events: none;
+  }
 }
 .th-splash[data-phase="exit"] {
   opacity: 0;
